@@ -16,10 +16,10 @@ export interface AIModelConfig {
 export const SUPPORTED_MODELS: AIModelConfig[] = [
   {
     id: 'gemini-3.8-live-extended-thinking',
-    name: 'Gemini 3.8 Live',
-    badge: 'Extended Thinking',
-    description: 'Deep mathematical, scientific, and Socratic reasoning with step-by-step internal deliberation.',
-    supportedThinkingLevels: ['low', 'medium', 'high'],
+    name: 'Gemini 3.8 Live Extended Thinking',
+    badge: 'Extended Thinking & Reasoning',
+    description: "Google's premier reasoning voice model with multi-step background planning, parallel thoughts, and deep whiteboard problem-solving.",
+    supportedThinkingLevels: ['minimal', 'low', 'medium', 'high'],
     defaultThinkingLevel: 'high',
     icon: '🧠',
     gradient: 'linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(78, 205, 196, 0.25))',
@@ -27,8 +27,8 @@ export const SUPPORTED_MODELS: AIModelConfig[] = [
   {
     id: 'gemini-3.8-live',
     name: 'Gemini 3.8 Live',
-    badge: 'Ultra-Fast Realtime',
-    description: 'Ultra-low latency conversational audio with instantaneous verbal turn-taking and zero thinking delay.',
+    badge: 'Realtime Voice & Tools',
+    description: 'High-speed conversational audio AI with zero latency, native multimodal streaming, and background whiteboard tools.',
     supportedThinkingLevels: [],
     icon: '⚡',
     gradient: 'linear-gradient(135deg, rgba(56, 239, 125, 0.25), rgba(78, 205, 196, 0.25))',
@@ -71,7 +71,7 @@ export const ModelSelectorModal: React.FC<ModelSelectorModalProps> = ({
       setSelectedModelId(currentModel);
       setSelectedThinkingLevel((currentThinkingLevel as ThinkingLevel) || 'high');
     }
-  }, [isOpen]);
+  }, [isOpen, currentModel, currentThinkingLevel]);
 
   if (!isOpen) return null;
 
