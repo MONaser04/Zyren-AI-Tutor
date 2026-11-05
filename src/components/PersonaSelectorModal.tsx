@@ -439,6 +439,69 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
             </div>
           </div>
 
+          {/* Section: Learner Personalization Name (Prominent at Top) */}
+          <div
+            style={{
+              padding: '14px 16px',
+              borderRadius: 12,
+              backgroundColor: 'rgba(78, 205, 196, 0.08)',
+              border: '1px solid rgba(78, 205, 196, 0.35)',
+              boxShadow: '0 2px 12px rgba(78, 205, 196, 0.06)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: '#4ECDC4',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span>👤</span>
+                <span>Student Name / اسم المتعلم (Optional / اختياري)</span>
+              </div>
+              <span style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.5)' }}>
+                Saved locally on your device only • محفوظ محلياً فقط
+              </span>
+            </div>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                value={learnerName || ''}
+                onChange={(e) => {
+                  onUpdateSpeakingStyle({
+                    verbosity,
+                    vocalTone,
+                    learnerProfile,
+                    learnerName: e.target.value,
+                  });
+                }}
+                placeholder="e.g. Type your name / أدخل اسمك هنا"
+                maxLength={40}
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(78, 205, 196, 0.45)',
+                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                  color: '#FFFFFF',
+                  fontSize: 13,
+                  outline: 'none',
+                  fontFamily: "'Inter', sans-serif",
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.55)', marginTop: 6, lineHeight: 1.4 }}>
+              The tutor will address you naturally by your name during explanations, greetings, and praise. (سيخاطبك المعلم باسمك أثناء الشرح والترحيب)
+            </div>
+          </div>
+
           {/* Dimension 1: Response Length & Verbosity */}
           <div>
             <div
@@ -733,61 +796,6 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
                   </button>
                 );
               })}
-            </div>
-          </div>
-
-          {/* Section 4: Learner Personalization Name */}
-          <div style={{ marginTop: 22 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  letterSpacing: '0.08em',
-                  textTransform: 'uppercase',
-                  color: 'rgba(255, 255, 255, 0.45)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                }}
-              >
-                <span>👤</span>
-                <span>Student Name (Optional / اختياري)</span>
-              </div>
-              <span style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.4)' }}>
-                Saved locally on your device only
-              </span>
-            </div>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="text"
-                value={learnerName || ''}
-                onChange={(e) => {
-                  onUpdateSpeakingStyle({
-                    verbosity,
-                    vocalTone,
-                    learnerProfile,
-                    learnerName: e.target.value,
-                  });
-                }}
-                placeholder="e.g. Enter your name / أدخل اسمك هنا"
-                maxLength={40}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: 10,
-                  border: '1px solid rgba(255, 255, 255, 0.14)',
-                  backgroundColor: 'rgba(255, 255, 255, 0.035)',
-                  color: '#FFFFFF',
-                  fontSize: 13,
-                  outline: 'none',
-                  fontFamily: "'Inter', sans-serif",
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-            <div style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.45)', marginTop: 5, lineHeight: 1.4 }}>
-              The tutor will address you naturally by your name during explanations, greetings, and praise.
             </div>
           </div>
         </div>

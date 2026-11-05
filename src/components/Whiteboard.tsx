@@ -4375,11 +4375,11 @@ export function Whiteboard({
           {/* Speaking Style, Vocal Tone & Persona Studio Selector */}
           <button
             onClick={() => setIsPersonaModalOpen(true)}
-            title={`Speaking Style & Persona: ${
+            title={`Speaking Style, Persona & Student Name: ${
               VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.name || verbosity
             } • ${VOCAL_TONE_OPTIONS.find((t) => t.id === vocalTone)?.name || vocalTone} • ${
               LEARNER_PROFILE_OPTIONS.find((p) => p.id === learnerProfile)?.name || learnerProfile
-            } (Click to customize live)`}
+            } ${learnerName ? `• Student: ${learnerName}` : '• Click to set your name'} (Click to customize live)`}
             style={{
               padding: '7px 10px',
               fontSize: 11,
@@ -4397,7 +4397,9 @@ export function Whiteboard({
           >
             <span>🎭</span>
             <span>
-              {VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'}
+              {learnerName
+                ? `${learnerName} (${VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'})`
+                : `${VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'} • Name 👤`}
             </span>
           </button>
 
