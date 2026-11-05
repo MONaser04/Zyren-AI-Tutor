@@ -4,7 +4,7 @@
 
 ![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.2.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
 ![Build Passing](https://img.shields.io/badge/build-passing-10B981?style=for-the-badge&logo=githubactions&logoColor=white)
-![Tests Passing](https://img.shields.io/badge/tests-106%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
+![Tests Passing](https://img.shields.io/badge/tests-109%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
 ![LiveKit WebRTC](https://img.shields.io/badge/LiveKit-WebRTC%20RTC-00D26A?style=for-the-badge&logo=livekit&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Gemini_Live-Multimodal%20Realtime-EA4335?style=for-the-badge&logo=google&logoColor=white)
 ![React 18](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=for-the-badge&logo=react&logoColor=black)
@@ -114,7 +114,7 @@ python main.py
   - `gemini-3.1-flash-live-preview` (Agile multimodal preview with thinking depth)
 - **Zero-Disconnection Voice Switching**: Audition and switch between **30 Gemini vocal personas** (Aoede, Puck, Charon, Kore, Fenrir, Zephyr, etc.) mid-call with instant audio preview playback and favorites filtering.
 - **Simultaneous Action & Speech Protocol**: Whiteboard tool calls are emitted concurrently at the exact first word of explanation; zero verbal filler promises (*"سأكتب ذلك على السبورة"*) and zero retroactive narrations (*"وها قد كتبتها"*).
-- **Learner Name & Identity Personalization**: Configure your chosen name in the Persona settings. The AI Tutor addresses you warmly and naturally by name during greetings, deductions, and praise. Stored strictly in local device storage (`localStorage`) with runtime WebRTC injection to prevent personal name leakage into git history.
+- **Learner & Tutor Name Personalization**: Configure your student name as well as a custom teacher name in the Persona settings (defaulting to **Zyren**). The AI Tutor adopts this identity when introducing itself and addresses you warmly by your student name. Stored strictly in local device storage (`localStorage`) with runtime WebRTC injection to preserve git privacy.
 - **Turn-0 Memory Reset**: Hard reset of Gemini Live WebSocket and agent memory without reloading the page.
 
 ### 🌐 2. Multilingual Hierarchy & Speech Stability Benchmark
@@ -360,10 +360,10 @@ To run on a tablet, iPad, or mobile phone on the same Wi-Fi network, access the 
 
 ## 🧪 Testing & Quality Assurance
 
-AI Tutor enforces strict quality assurance with **106 automated passing tests** across both frontend and backend layers:
+AI Tutor enforces strict quality assurance with **109 automated passing tests** across both frontend and backend layers:
 
-### 1. Frontend Test Suite (Vitest — 81 Tests)
-Executes 81 unit tests validating multi-directional diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
+### 1. Frontend Test Suite (Vitest — 83 Tests)
+Executes 83 unit tests validating multi-directional diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
 ```bash
 npm test
 ```
@@ -376,17 +376,17 @@ npm test
  ✓ tests/unit/graph_shading.test.ts (5 tests)
 
  Test Files  6 passed (6)
-      Tests  81 passed (81)
+      Tests  83 passed (83)
 ```
 
-### 2. Backend Agent Test Suite (Pytest — 25 Tests)
+### 2. Backend Agent Test Suite (Pytest — 26 Tests)
 Validates asynchronous tool calls, persistent JSON config stores, student name personalization without git leaks, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
 ```bash
 # In active Python virtual environment:
 pytest tests/agent/
 ```
 ```
-collected 25 items
+collected 26 items
 tests/agent/test_agent.py .                                              [  4%]
 tests/agent/test_config_store.py ..                                      [ 12%]
 tests/agent/test_language_config.py .........                            [ 48%]
@@ -394,7 +394,7 @@ tests/agent/test_media_and_extended_thinking.py ....                     [ 64%]
 tests/agent/test_mlf_instructions.py .                                   [ 68%]
 tests/agent/test_problem7_fixes.py ........                              [100%]
 
-============================= 25 passed in 6.85s =============================
+============================= 26 passed in 6.85s =============================
 ```
 
 ### 3. Frontend Production Build Check

@@ -458,6 +458,7 @@ function createZyrenApiMiddleware() {
         const vocalTone = parsedUrl.searchParams.get('vocalTone') || 'natural'
         const learnerProfile = parsedUrl.searchParams.get('learnerProfile') || 'general'
         const learnerName = parsedUrl.searchParams.get('learnerName') || ''
+        const tutorName = (parsedUrl.searchParams.get('tutorName') || 'Zyren').trim() || 'Zyren'
         const rawLangConfig = parsedUrl.searchParams.get('languageConfig')
         let languageConfig: any = undefined
         if (rawLangConfig) {
@@ -467,7 +468,7 @@ function createZyrenApiMiddleware() {
             // ignore malformed config
           }
         }
-        const metadataObj: Record<string, any> = { voice, style, model, thinkingLevel, verbosity, vocalTone, learnerProfile }
+        const metadataObj: Record<string, any> = { voice, style, model, thinkingLevel, verbosity, vocalTone, learnerProfile, tutorName }
         if (learnerName) {
           metadataObj.learnerName = learnerName
         }

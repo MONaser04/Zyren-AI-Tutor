@@ -224,3 +224,29 @@ def test_learner_name_dynamic_personalization_without_git_leakage():
         learner_name=None,
     )
     assert "STUDENT IDENTITY & NATURAL PERSONALIZATION" not in none_inst
+
+def test_tutor_name_dynamic_configuration():
+    """Verify tutor name defaults to Zyren and adapts dynamically to custom teacher names."""
+    # 1. Default tutor name
+    default_inst = build_dynamic_tutor_instructions(
+        writing_style="mixed",
+        verbosity="balanced",
+        vocal_tone="natural",
+        learner_profile="general",
+    )
+    assert "TUTOR IDENTITY & TEACHER NAME" in default_inst
+    assert "Your teacher identity name is 'Zyren'" in default_inst
+    assert "You are ZYREN," in default_inst
+
+    # 2. Custom tutor name
+    custom_inst = build_dynamic_tutor_instructions(
+        writing_style="mixed",
+        verbosity="balanced",
+        vocal_tone="natural",
+        learner_profile="general",
+        tutor_name="Atlas",
+    )
+    assert "TUTOR IDENTITY & TEACHER NAME" in custom_inst
+    assert "Your teacher identity name is 'Atlas'" in custom_inst
+    assert "You are ATLAS," in custom_inst
+

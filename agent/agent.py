@@ -347,6 +347,7 @@ def build_style_status_block(
     model_name: str = "gemini-3.8-live-extended-thinking",
     language_config: dict | None = None,
     learner_name: str | None = None,
+    tutor_name: str | None = "Zyren",
 ) -> str:
     ws = str(writing_style or "mixed").lower()
     vb = str(verbosity or "balanced").lower()
@@ -401,6 +402,13 @@ def build_style_status_block(
             f"- NEVER repeat their name mechanically or repetitively in every single sentence or turn — keep it organic, respectful, and authentic as a natural teacher would."
         )
 
+    active_tutor_name = str(tutor_name or "Zyren").strip() or "Zyren"
+    base_block += (
+        f"\n\n### TUTOR IDENTITY & TEACHER NAME:\n"
+        f"- Your teacher identity name is '{active_tutor_name}'.\n"
+        f"- When introducing yourself, greeting the student, or when asked who you are, identify yourself naturally as '{active_tutor_name}'.\n"
+    )
+
     base_block += "\n\n" + build_language_instruction_block(language_config)
     return base_block
 
@@ -413,8 +421,14 @@ def build_dynamic_tutor_instructions(
     model_name: str = "gemini-3.8-live-extended-thinking",
     language_config: dict | None = None,
     learner_name: str | None = None,
+    tutor_name: str | None = "Zyren",
 ) -> str:
-    return TUTOR_SYSTEM_INSTRUCTIONS + "\n\n" + build_style_status_block(
+    active_tutor_name = str(tutor_name or "Zyren").strip() or "Zyren"
+    base_instructions = TUTOR_SYSTEM_INSTRUCTIONS
+    if active_tutor_name.upper() != "ZYREN":
+        base_instructions = base_instructions.replace("You are ZYREN,", f"You are {active_tutor_name.upper()},", 1)
+
+    return base_instructions + "\n\n" + build_style_status_block(
         writing_style=writing_style,
         verbosity=verbosity,
         vocal_tone=vocal_tone,
@@ -422,6 +436,7 @@ def build_dynamic_tutor_instructions(
         model_name=model_name,
         language_config=language_config,
         learner_name=learner_name,
+        tutor_name=active_tutor_name,
     )
 
 
@@ -528,6 +543,7 @@ class TutorAgent(Agent):
         model_name: str = "gemini-3.8-live-extended-thinking",
         language_config: dict | None = None,
         learner_name: str | None = None,
+        tutor_name: str | None = "Zyren",
     ):
         dynamic_instructions = build_dynamic_tutor_instructions(
             writing_style=writing_style,
@@ -537,6 +553,7 @@ class TutorAgent(Agent):
             model_name=model_name,
             language_config=language_config,
             learner_name=learner_name,
+            tutor_name=tutor_name,
         )
         super().__init__(
             instructions=dynamic_instructions,
@@ -547,6 +564,7 @@ class TutorAgent(Agent):
         self._vocal_tone = vocal_tone
         self._learner_profile = learner_profile
         self._learner_name = str(learner_name or "").strip()
+        self._tutor_name = str(tutor_name or "Zyren").strip() or "Zyren"
         self._active_model = model_name
         self._language_config = language_config or {
             "autoDetect": False,
@@ -2046,6 +2064,9 @@ async def entrypoint(ctx: JobContext):
                     learner_name = str(meta.get("learnerName") or meta.get("learner_name") or meta.get("student_name") or "").strip()
                     if learner_name:
                         print(f">>> [AGENT] Loaded chosen student name: {learner_name}")
+                    tutor_name = str(meta.get("tutorName") or meta.get("tutor_name") or meta.get("teacher_name") or "Zyren").strip() or "Zyren"
+                    if tutor_name != "Zyren":
+                        print(f">>> [AGENT] Loaded chosen tutor name: {tutor_name}")
                 except Exception as ex:
                     print(f">>> [AGENT] Could not parse participant metadata: {ex}")
 
@@ -2074,6 +2095,7 @@ async def entrypoint(ctx: JobContext):
             model_name=selected_model,
             language_config=language_config,
             learner_name=learner_name,
+            tutor_name=tutor_name,
         )
 
         # Dynamically resolve the latest Gemini API key from OS AppData UI config or .env
@@ -2120,6 +2142,7 @@ async def entrypoint(ctx: JobContext):
             model_name=selected_model,
             language_config=language_config,
             learner_name=learner_name,
+            tutor_name=tutor_name,
         )
         session = AgentSession(
             llm=model,
@@ -2610,6 +2633,7 @@ async def entrypoint(ctx: JobContext):
             new_learner_profile: str | None = None,
             new_language_config: dict | None = None,
             new_learner_name: str | None = None,
+            new_tutor_name: str | None = None,
         ):
             changed = False
             language_changed = False
@@ -2628,6 +2652,11 @@ async def entrypoint(ctx: JobContext):
             if new_learner_name is not None and new_learner_name != agent._learner_name:
                 agent._learner_name = str(new_learner_name).strip()
                 changed = True
+            if new_tutor_name is not None:
+                clean_tutor = str(new_tutor_name).strip() or "Zyren"
+                if clean_tutor != getattr(agent, "_tutor_name", "Zyren"):
+                    agent._tutor_name = clean_tutor
+                    changed = True
             if new_language_config:
                 old_lang_json = json.dumps(getattr(agent, "_language_config", {}), sort_keys=True)
                 new_lang_json = json.dumps(new_language_config, sort_keys=True)
@@ -2647,6 +2676,7 @@ async def entrypoint(ctx: JobContext):
                 model_name=agent._active_model,
                 language_config=agent._language_config,
                 learner_name=agent._learner_name,
+                tutor_name=getattr(agent, "_tutor_name", "Zyren"),
             )
             agent._instructions = updated_instructions
             model._opts.instructions = updated_instructions
@@ -2804,6 +2834,7 @@ async def entrypoint(ctx: JobContext):
                         new_learner_profile=msg.get("learnerProfile") or msg.get("learner_profile") or msg.get("profile"),
                         new_language_config=msg.get("languageConfig") or msg.get("language_config"),
                         new_learner_name=msg.get("learnerName") or msg.get("learner_name") or msg.get("student_name"),
+                        new_tutor_name=msg.get("tutorName") or msg.get("tutor_name") or msg.get("teacher_name"),
                     )
                 elif msg_type in ("reset_ai_memory", "reset_agent_context"):
                     print(">>> [AGENT] Received 'reset_ai_memory' command from student!")
@@ -2901,6 +2932,8 @@ async def entrypoint(ctx: JobContext):
                         new_vocal_tone=meta.get("vocalTone") or meta.get("vocal_tone"),
                         new_learner_profile=meta.get("learnerProfile") or meta.get("learner_profile"),
                         new_language_config=meta.get("languageConfig") or meta.get("language_config"),
+                        new_learner_name=meta.get("learnerName") or meta.get("learner_name") or meta.get("student_name"),
+                        new_tutor_name=meta.get("tutorName") or meta.get("tutor_name") or meta.get("teacher_name"),
                     )
                     if "model" in meta and meta["model"]:
                         new_lvl = meta.get("thinkingLevel") or meta.get("thinking_level") or "high"
@@ -2921,6 +2954,8 @@ async def entrypoint(ctx: JobContext):
                         new_vocal_tone=meta.get("vocalTone") or meta.get("vocal_tone"),
                         new_learner_profile=meta.get("learnerProfile") or meta.get("learner_profile"),
                         new_language_config=meta.get("languageConfig") or meta.get("language_config"),
+                        new_learner_name=meta.get("learnerName") or meta.get("learner_name") or meta.get("student_name"),
+                        new_tutor_name=meta.get("tutorName") or meta.get("tutor_name") or meta.get("teacher_name"),
                     )
                     if "model" in meta and meta["model"]:
                         new_lvl = meta.get("thinkingLevel") or meta.get("thinking_level") or "high"

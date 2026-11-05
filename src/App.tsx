@@ -50,6 +50,13 @@ function App() {
       return '';
     }
   });
+  const [tutorName, setTutorName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('AI_TUTOR_NAME') || 'Zyren';
+    } catch {
+      return 'Zyren';
+    }
+  });
   const [languageConfig, setLanguageConfig] = useState<LanguageConfig>(() => {
     try {
       const saved = localStorage.getItem('AI_TUTOR_LANGUAGE_CONFIG');
@@ -95,6 +102,11 @@ function App() {
       const cleanName = next.learnerName.trim();
       localStorage.setItem('AI_TUTOR_LEARNER_NAME', cleanName);
       setLearnerName(cleanName);
+    }
+    if (next.tutorName !== undefined) {
+      const cleanTutor = next.tutorName.trim() || 'Zyren';
+      localStorage.setItem('AI_TUTOR_NAME', cleanTutor);
+      setTutorName(cleanTutor);
     }
     setVerbosity(next.verbosity);
     setVocalTone(next.vocalTone);
@@ -191,7 +203,7 @@ function App() {
     const fetchToken = async () => {
       try {
         const res = await fetch(
-          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}&verbosity=${encodeURIComponent(verbosity)}&vocalTone=${encodeURIComponent(vocalTone)}&learnerProfile=${encodeURIComponent(learnerProfile)}&learnerName=${encodeURIComponent(learnerName)}&languageConfig=${encodeURIComponent(JSON.stringify(languageConfig))}`
+          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}&verbosity=${encodeURIComponent(verbosity)}&vocalTone=${encodeURIComponent(vocalTone)}&learnerProfile=${encodeURIComponent(learnerProfile)}&learnerName=${encodeURIComponent(learnerName)}&tutorName=${encodeURIComponent(tutorName || 'Zyren')}&languageConfig=${encodeURIComponent(JSON.stringify(languageConfig))}`
         );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -281,6 +293,7 @@ function App() {
           vocalTone={vocalTone}
           learnerProfile={learnerProfile}
           learnerName={learnerName}
+          tutorName={tutorName}
           onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
           isSpeakerMuted={isSpeakerMuted}
           onToggleSpeakerMute={handleToggleSpeakerMute}
@@ -471,6 +484,7 @@ function App() {
         vocalTone={vocalTone}
         learnerProfile={learnerProfile}
         learnerName={learnerName}
+        tutorName={tutorName}
         onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
         isSpeakerMuted={isSpeakerMuted}
         onToggleSpeakerMute={handleToggleSpeakerMute}

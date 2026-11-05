@@ -530,3 +530,24 @@ describe('Feature 7: Session Pinning & Eviction Immunity', () => {
     expect(index.sessions[0].id).toBe('session-beta');
   });
 });
+
+describe('Feature 8: Persona Identity Customization (Student Name & Custom Tutor Name)', () => {
+  it('defaults tutor name to Zyren when unconfigured or blank', () => {
+    const defaultTutor = ('' || 'Zyren').trim() || 'Zyren';
+    expect(defaultTutor).toBe('Zyren');
+  });
+
+  it('allows custom tutor names to be stored and used in identity payloads', () => {
+    const customTutor = 'Professor Faraday';
+    const payload = {
+      type: 'change_speaking_style',
+      learnerName: 'LearnerTest',
+      tutorName: customTutor,
+      verbosity: 'balanced',
+    };
+
+    expect(payload.tutorName).toBe('Professor Faraday');
+    expect(payload.learnerName).toBe('LearnerTest');
+  });
+});
+

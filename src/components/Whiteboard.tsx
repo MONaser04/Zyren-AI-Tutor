@@ -110,6 +110,7 @@ interface WhiteboardProps {
   vocalTone?: VocalToneMode;
   learnerProfile?: LearnerProfileMode;
   learnerName?: string;
+  tutorName?: string;
   onUpdateSpeakingStyle?: (next: SpeakingStyleConfig) => void;
   isSpeakerMuted?: boolean;
   onToggleSpeakerMute?: () => void;
@@ -133,6 +134,7 @@ export function Whiteboard({
   vocalTone = 'natural',
   learnerProfile = 'general',
   learnerName = '',
+  tutorName = 'Zyren',
   onUpdateSpeakingStyle,
   isSpeakerMuted = false,
   onToggleSpeakerMute,
@@ -4375,11 +4377,9 @@ export function Whiteboard({
           {/* Speaking Style, Vocal Tone & Persona Studio Selector */}
           <button
             onClick={() => setIsPersonaModalOpen(true)}
-            title={`Speaking Style, Persona & Student Name: ${
+            title={`Speaking Style & Persona: ${
               VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.name || verbosity
-            } • ${VOCAL_TONE_OPTIONS.find((t) => t.id === vocalTone)?.name || vocalTone} • ${
-              LEARNER_PROFILE_OPTIONS.find((p) => p.id === learnerProfile)?.name || learnerProfile
-            } ${learnerName ? `• Student: ${learnerName}` : '• Click to set your name'} (Click to customize live)`}
+            } • Tutor: ${tutorName || 'Zyren'} ${learnerName ? `• Student: ${learnerName}` : '• Click to set names'} (Click to customize live)`}
             style={{
               padding: '7px 10px',
               fontSize: 11,
@@ -4398,8 +4398,8 @@ export function Whiteboard({
             <span>🎭</span>
             <span>
               {learnerName
-                ? `${learnerName} (${VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'})`
-                : `${VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'} • Name 👤`}
+                ? `${learnerName} (${tutorName || 'Zyren'})`
+                : `${tutorName || 'Zyren'} • Name 👤`}
             </span>
           </button>
 
@@ -4927,11 +4927,13 @@ export function Whiteboard({
         vocalTone={vocalTone}
         learnerProfile={learnerProfile}
         learnerName={learnerName}
+        tutorName={tutorName}
         onUpdateSpeakingStyle={(next) => {
           onUpdateSpeakingStyle?.(next);
           if (room && room.state === 'connected') {
             try {
               const cleanLearnerName = (next.learnerName || '').trim();
+              const cleanTutorName = (next.tutorName || tutorName || 'Zyren').trim() || 'Zyren';
               room.localParticipant.setMetadata(
                 JSON.stringify({
                   voice: currentVoice,
@@ -4942,6 +4944,7 @@ export function Whiteboard({
                   vocalTone: next.vocalTone,
                   learnerProfile: next.learnerProfile,
                   learnerName: cleanLearnerName,
+                  tutorName: cleanTutorName,
                 })
               );
 
@@ -4951,6 +4954,7 @@ export function Whiteboard({
                 vocalTone: next.vocalTone,
                 learnerProfile: next.learnerProfile,
                 learnerName: cleanLearnerName,
+                tutorName: cleanTutorName,
                 style: currentStyle,
               });
               const encoder = new TextEncoder();

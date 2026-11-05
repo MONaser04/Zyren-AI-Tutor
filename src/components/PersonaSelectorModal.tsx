@@ -9,6 +9,7 @@ export interface SpeakingStyleConfig {
   vocalTone: VocalToneMode;
   learnerProfile: LearnerProfileMode;
   learnerName?: string;
+  tutorName?: string;
 }
 
 export interface StyleOptionItem<T extends string> {
@@ -225,6 +226,7 @@ interface PersonaSelectorModalProps {
   vocalTone: VocalToneMode;
   learnerProfile: LearnerProfileMode;
   learnerName?: string;
+  tutorName?: string;
   onUpdateSpeakingStyle: (next: SpeakingStyleConfig) => void;
 }
 
@@ -235,6 +237,7 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
   vocalTone,
   learnerProfile,
   learnerName = '',
+  tutorName = 'Zyren',
   onUpdateSpeakingStyle,
 }) => {
   if (!isOpen) return null;
@@ -439,7 +442,7 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
             </div>
           </div>
 
-          {/* Section: Learner Personalization Name (Prominent at Top) */}
+          {/* Section: Names & Identity Personalization (Prominent at Top) */}
           <div
             style={{
               padding: '14px 16px',
@@ -449,56 +452,154 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
               boxShadow: '0 2px 12px rgba(78, 205, 196, 0.06)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                  color: '#4ECDC4',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                }}
-              >
-                <span>👤</span>
-                <span>Student Name (Optional)</span>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                gap: 16,
+              }}
+            >
+              {/* Student Name */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: '#4ECDC4',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>👤</span>
+                    <span>Student Name (Optional)</span>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={learnerName || ''}
+                  onChange={(e) => {
+                    onUpdateSpeakingStyle({
+                      verbosity,
+                      vocalTone,
+                      learnerProfile,
+                      learnerName: e.target.value,
+                      tutorName,
+                    });
+                  }}
+                  placeholder="e.g. Enter your name"
+                  maxLength={40}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(78, 205, 196, 0.45)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                    color: '#FFFFFF',
+                    fontSize: 13,
+                    outline: 'none',
+                    fontFamily: "'Inter', sans-serif",
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.5)', marginTop: 4 }}>
+                  The tutor addresses you by this name.
+                </div>
               </div>
-              <span style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.5)' }}>
-                Saved locally on your device only
-              </span>
+
+              {/* Tutor Name */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: '#38EF7D',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>🎓</span>
+                    <span>Tutor Name (Default: Zyren)</span>
+                  </div>
+                  {tutorName && tutorName !== 'Zyren' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateSpeakingStyle({
+                          verbosity,
+                          vocalTone,
+                          learnerProfile,
+                          learnerName,
+                          tutorName: 'Zyren',
+                        });
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'rgba(255, 255, 255, 0.5)',
+                        fontSize: 10,
+                        cursor: 'pointer',
+                        padding: 0,
+                        textDecoration: 'underline',
+                      }}
+                    >
+                      Reset to Zyren
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={tutorName}
+                  onChange={(e) => {
+                    onUpdateSpeakingStyle({
+                      verbosity,
+                      vocalTone,
+                      learnerProfile,
+                      learnerName,
+                      tutorName: e.target.value,
+                    });
+                  }}
+                  placeholder="e.g. Zyren"
+                  maxLength={40}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(56, 239, 125, 0.45)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                    color: '#FFFFFF',
+                    fontSize: 13,
+                    outline: 'none',
+                    fontFamily: "'Inter', sans-serif",
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.5)', marginTop: 4 }}>
+                  Identity name the AI Tutor adopts.
+                </div>
+              </div>
             </div>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="text"
-                value={learnerName || ''}
-                onChange={(e) => {
-                  onUpdateSpeakingStyle({
-                    verbosity,
-                    vocalTone,
-                    learnerProfile,
-                    learnerName: e.target.value,
-                  });
-                }}
-                placeholder="e.g. Enter your name"
-                maxLength={40}
-                style={{
-                  width: '100%',
-                  padding: '11px 14px',
-                  borderRadius: 8,
-                  border: '1px solid rgba(78, 205, 196, 0.45)',
-                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
-                  color: '#FFFFFF',
-                  fontSize: 13,
-                  outline: 'none',
-                  fontFamily: "'Inter', sans-serif",
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-            <div style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.55)', marginTop: 6, lineHeight: 1.4 }}>
-              The tutor will address you naturally by your name during explanations, greetings, and praise.
+
+            <div
+              style={{
+                fontSize: 10,
+                color: 'rgba(255, 255, 255, 0.4)',
+                borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                marginTop: 10,
+                paddingTop: 6,
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span>Saved locally on your device only</span>
+              <span>Default tutor: Zyren</span>
             </div>
           </div>
 
@@ -820,6 +921,7 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
                 vocalTone: 'natural',
                 learnerProfile: 'general',
                 learnerName: '',
+                tutorName: 'Zyren',
               })
             }
             style={{
