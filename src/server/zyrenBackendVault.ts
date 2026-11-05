@@ -35,6 +35,7 @@ export interface SessionSummaryItem {
   id: string;
   title: string;
   isAutoTitled?: boolean;
+  isPinned?: boolean;
   createdAt: number;
   updatedAt: number;
   slideCount: number;
@@ -411,12 +412,17 @@ export function saveSessionSnapshotToDisk(
   const chatMessages = Array.isArray(payload.chatMessages) ? payload.chatMessages : [];
   const title = String(payload.title || 'Untitled Whiteboard').trim() || 'Untitled Whiteboard';
 
+  const currentIndex = readSessionIndex(sessionsDir);
+  const existingInIdx = currentIndex.sessions.find((s) => s.id === safeId);
+  const isPinned = payload.isPinned !== undefined ? Boolean(payload.isPinned) : Boolean(existingInIdx?.isPinned);
+
   const normalizedRecord = {
     version: '2.0',
     appName: 'AI_Tutor_Whiteboard',
     id: safeId,
     title,
     isAutoTitled: Boolean(payload.isAutoTitled),
+    isPinned,
     createdAt,
     updatedAt,
     timestamp: updatedAt,
@@ -432,17 +438,27 @@ export function saveSessionSnapshotToDisk(
     id: safeId,
     title,
     isAutoTitled: Boolean(payload.isAutoTitled),
+    isPinned,
     createdAt,
     updatedAt,
     slideCount: payload.pages.length,
     messageCount: chatMessages.length,
   };
 
-  const currentIndex = readSessionIndex(sessionsDir);
   const filtered = currentIndex.sessions.filter((s) => s.id !== safeId);
-  const merged = [summary, ...filtered].sort((a, b) => b.updatedAt - a.updatedAt);
-  const kept = merged.slice(0, MAX_STORED_SESSIONS);
-  const evicted = merged.slice(MAX_STORED_SESSIONS);
+  const merged = [summary, ...filtered].sort((a, b) => {
+    const aPin = Boolean(a.isPinned);
+    const bPin = Boolean(b.isPinned);
+    if (bPin !== aPin) return bPin ? 1 : -1;
+    return b.updatedAt - a.updatedAt;
+  });
+
+  // Protect pinned sessions from automatic eviction!
+  const pinnedSessions = merged.filter((s) => s.isPinned);
+  const unpinnedSessions = merged.filter((s) => !s.isPinned);
+  const maxUnpinned = Math.max(10, MAX_STORED_SESSIONS - pinnedSessions.length);
+  const keptUnpinned = unpinnedSessions.slice(0, maxUnpinned);
+  const evicted = unpinnedSessions.slice(maxUnpinned);
 
   for (const old of evicted) {
     const oldFile = path.join(sessionsDir, `${sanitizeSessionId(old.id)}.aitutor.json`);
@@ -454,6 +470,13 @@ export function saveSessionSnapshotToDisk(
       }
     }
   }
+
+  const kept = [...pinnedSessions, ...keptUnpinned].sort((a, b) => {
+    const aPin = Boolean(a.isPinned);
+    const bPin = Boolean(b.isPinned);
+    if (bPin !== aPin) return bPin ? 1 : -1;
+    return b.updatedAt - a.updatedAt;
+  });
 
   const nextIndex: SessionIndexFile = {
     activeSessionId: opts?.setActive === false ? (currentIndex.activeSessionId || safeId) : safeId,
@@ -709,4 +732,43 @@ export function resolveMediaFileOnDisk(
   }
 
   return null;
+}
+
+export function toggleSessionPinOnDisk(
+  sessionId: string,
+  isPinned?: boolean,
+  opts?: { appDataDir?: string }
+): { ok: boolean; id: string; isPinned: boolean; summary?: SessionSummaryItem } {
+  const sessionsDir = getSessionsDir(opts?.appDataDir);
+  const safeId = sanitizeSessionId(sessionId);
+  const currentIndex = readSessionIndex(sessionsDir);
+  const target = currentIndex.sessions.find((s) => s.id === safeId);
+
+  if (!target) {
+    return { ok: false, id: safeId, isPinned: false };
+  }
+
+  const nextPinned = isPinned !== undefined ? Boolean(isPinned) : !target.isPinned;
+  target.isPinned = nextPinned;
+
+  const sessionFilePath = path.join(sessionsDir, `${safeId}.aitutor.json`);
+  if (fs.existsSync(sessionFilePath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8'));
+      data.isPinned = nextPinned;
+      writeJsonAtomic(sessionFilePath, data, false);
+    } catch {
+      // ignore
+    }
+  }
+
+  currentIndex.sessions.sort((a, b) => {
+    const aPin = Boolean(a.isPinned);
+    const bPin = Boolean(b.isPinned);
+    if (bPin !== aPin) return bPin ? 1 : -1;
+    return b.updatedAt - a.updatedAt;
+  });
+
+  writeJsonAtomic(path.join(sessionsDir, 'index.json'), currentIndex, false);
+  return { ok: true, id: safeId, isPinned: nextPinned, summary: target };
 }

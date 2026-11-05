@@ -7,6 +7,7 @@ export interface SavedTutorSession {
   id: string;
   title: string;
   isAutoTitled?: boolean;
+  isPinned?: boolean;
   createdAt: number;
   updatedAt: number;
   activePageIndex: number;
@@ -18,6 +19,7 @@ export interface SavedSessionSummary {
   id: string;
   title: string;
   isAutoTitled?: boolean;
+  isPinned?: boolean;
   createdAt: number;
   updatedAt: number;
   slideCount: number;
@@ -227,12 +229,18 @@ export async function listSessionsFromIDB(): Promise<SavedSessionSummary[]> {
             id: s.id,
             title: s.title || 'Untitled Whiteboard',
             isAutoTitled: s.isAutoTitled,
+            isPinned: Boolean(s.isPinned),
             createdAt: s.createdAt || s.updatedAt || Date.now(),
             updatedAt: s.updatedAt || Date.now(),
             slideCount: Array.isArray(s.pages) ? s.pages.length : 1,
             messageCount: Array.isArray(s.chatMessages) ? s.chatMessages.length : 0,
           }))
-          .sort((a, b) => b.updatedAt - a.updatedAt);
+          .sort((a, b) => {
+            const aPin = Boolean(a.isPinned);
+            const bPin = Boolean(b.isPinned);
+            if (bPin !== aPin) return bPin ? 1 : -1;
+            return b.updatedAt - a.updatedAt;
+          });
         resolve(items);
       };
       req.onerror = () => {
@@ -405,4 +413,59 @@ export async function deleteSavedSessionEverywhere(id: string): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+export async function toggleSessionPinDualTier(
+  id: string,
+  isPinned?: boolean
+): Promise<{ ok: boolean; isPinned: boolean }> {
+  let targetPinned = isPinned;
+
+  // 1. Update IndexedDB mirror
+  const db = await openVaultDB();
+  if (db) {
+    await new Promise<void>((resolve) => {
+      try {
+        const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+        const store = tx.objectStore(STORE_SESSIONS);
+        const req = store.get(id);
+        req.onsuccess = () => {
+          const session = req.result as SavedTutorSession;
+          if (session) {
+            targetPinned = isPinned !== undefined ? isPinned : !session.isPinned;
+            session.isPinned = targetPinned;
+            store.put(session);
+          }
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      } catch {
+        db.close();
+        resolve();
+      }
+    });
+  }
+
+  // 2. Update Disk AppData backend vault
+  try {
+    const res = await fetch('/api/sessions/pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, isPinned: targetPinned }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, isPinned: Boolean(data?.isPinned ?? targetPinned) };
+    }
+  } catch {
+    // Fallback succeeds via IndexedDB
+  }
+
+  return { ok: true, isPinned: Boolean(targetPinned) };
 }

@@ -8,12 +8,14 @@ export interface RecentSession {
   timestamp: number;
   slideCount: number;
   messageCount?: number;
+  isPinned?: boolean;
   data?: {
     id?: string;
     title: string;
     activePageIndex: number;
     pages: WhiteboardPage[];
     chatMessages?: ChatMessage[];
+    isPinned?: boolean;
   };
 }
 
@@ -40,6 +42,7 @@ interface FileMenuProps {
   activeSessionId?: string;
   onLoadRecent: (session: RecentSession) => void;
   onDeleteRecent: (id: string) => void;
+  onTogglePinRecent?: (id: string, isPinned: boolean) => void;
   onOpenVoiceModal?: () => void;
   onOpenApiKeyModal?: () => void;
   autoSaveState?: 'idle' | 'saving' | 'saved' | 'error';
@@ -60,6 +63,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({
   activeSessionId,
   onLoadRecent,
   onDeleteRecent,
+  onTogglePinRecent,
   onOpenApiKeyModal,
   autoSaveState = 'saved',
   lastAutoSavedAt,
@@ -346,8 +350,10 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                             }}
                           >
                             <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8, flex: 1 }}>
-                              <div style={{ color: isCurrent ? '#4ECDC4' : '#fff', fontSize: 12, fontWeight: isCurrent ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {session.name || 'Untitled Session'} {isCurrent ? '• Active' : ''}
+                              <div style={{ color: isCurrent ? '#4ECDC4' : '#fff', fontSize: 12, fontWeight: isCurrent ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                {session.isPinned && <span title="Pinned session" style={{ color: '#F59E0B', fontSize: 11 }}>📌</span>}
+                                <span>{session.name || 'Untitled Session'}</span>
+                                {isCurrent && <span style={{ color: '#4ECDC4', fontSize: 11 }}>• Active</span>}
                               </div>
                               <div style={{ color: '#888', fontSize: 10.5, marginTop: 2 }}>
                                 {session.slideCount || 1} slide{(session.slideCount || 1) > 1 ? 's' : ''}
@@ -356,26 +362,51 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                                 {new Date(session.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                               </div>
                             </div>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDeleteRecent(session.id);
-                              }}
-                              title="Delete saved session"
-                              style={{
-                                background: 'transparent',
-                                border: 'none',
-                                color: '#666',
-                                fontSize: 12,
-                                cursor: 'pointer',
-                                padding: '2px 6px',
-                                borderRadius: 4,
-                              }}
-                              onMouseEnter={(e) => (e.currentTarget.style.color = '#ff6b6b')}
-                              onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
-                            >
-                              ✕
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                              {onTogglePinRecent && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onTogglePinRecent(session.id, !session.isPinned);
+                                  }}
+                                  title={session.isPinned ? "Unpin session" : "Pin session to top"}
+                                  style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: session.isPinned ? '#F59E0B' : 'rgba(255, 255, 255, 0.3)',
+                                    fontSize: 12,
+                                    cursor: 'pointer',
+                                    padding: '2px 4px',
+                                    borderRadius: 4,
+                                    transition: 'color 0.15s, transform 0.15s',
+                                  }}
+                                  onMouseEnter={(e) => (e.currentTarget.style.color = '#F59E0B')}
+                                  onMouseLeave={(e) => (e.currentTarget.style.color = session.isPinned ? '#F59E0B' : 'rgba(255, 255, 255, 0.3)')}
+                                >
+                                  📌
+                                </button>
+                              )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteRecent(session.id);
+                                }}
+                                title="Delete saved session"
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#666',
+                                  fontSize: 12,
+                                  cursor: 'pointer',
+                                  padding: '2px 6px',
+                                  borderRadius: 4,
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.color = '#ff6b6b')}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                              >
+                                ✕
+                              </button>
+                            </div>
                           </div>
                         );
                       })
