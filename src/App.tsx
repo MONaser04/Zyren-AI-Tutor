@@ -43,6 +43,13 @@ function App() {
   const [learnerProfile, setLearnerProfile] = useState<LearnerProfileMode>(() => {
     return (localStorage.getItem('AI_TUTOR_LEARNER_PROFILE') as LearnerProfileMode) || 'general';
   });
+  const [learnerName, setLearnerName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('AI_TUTOR_LEARNER_NAME') || '';
+    } catch {
+      return '';
+    }
+  });
   const [languageConfig, setLanguageConfig] = useState<LanguageConfig>(() => {
     try {
       const saved = localStorage.getItem('AI_TUTOR_LANGUAGE_CONFIG');
@@ -84,6 +91,11 @@ function App() {
     localStorage.setItem('AI_TUTOR_VERBOSITY', next.verbosity);
     localStorage.setItem('AI_TUTOR_VOCAL_TONE', next.vocalTone);
     localStorage.setItem('AI_TUTOR_LEARNER_PROFILE', next.learnerProfile);
+    if (next.learnerName !== undefined) {
+      const cleanName = next.learnerName.trim();
+      localStorage.setItem('AI_TUTOR_LEARNER_NAME', cleanName);
+      setLearnerName(cleanName);
+    }
     setVerbosity(next.verbosity);
     setVocalTone(next.vocalTone);
     setLearnerProfile(next.learnerProfile);
@@ -179,7 +191,7 @@ function App() {
     const fetchToken = async () => {
       try {
         const res = await fetch(
-          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}&verbosity=${encodeURIComponent(verbosity)}&vocalTone=${encodeURIComponent(vocalTone)}&learnerProfile=${encodeURIComponent(learnerProfile)}&languageConfig=${encodeURIComponent(JSON.stringify(languageConfig))}`
+          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}&verbosity=${encodeURIComponent(verbosity)}&vocalTone=${encodeURIComponent(vocalTone)}&learnerProfile=${encodeURIComponent(learnerProfile)}&learnerName=${encodeURIComponent(learnerName)}&languageConfig=${encodeURIComponent(JSON.stringify(languageConfig))}`
         );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -268,6 +280,7 @@ function App() {
           verbosity={verbosity}
           vocalTone={vocalTone}
           learnerProfile={learnerProfile}
+          learnerName={learnerName}
           onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
           isSpeakerMuted={isSpeakerMuted}
           onToggleSpeakerMute={handleToggleSpeakerMute}
@@ -457,6 +470,7 @@ function App() {
         verbosity={verbosity}
         vocalTone={vocalTone}
         learnerProfile={learnerProfile}
+        learnerName={learnerName}
         onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
         isSpeakerMuted={isSpeakerMuted}
         onToggleSpeakerMute={handleToggleSpeakerMute}

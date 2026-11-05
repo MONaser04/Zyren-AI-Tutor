@@ -346,6 +346,7 @@ def build_style_status_block(
     learner_profile: str = "general",
     model_name: str = "gemini-3.8-live-extended-thinking",
     language_config: dict | None = None,
+    learner_name: str | None = None,
 ) -> str:
     ws = str(writing_style or "mixed").lower()
     vb = str(verbosity or "balanced").lower()
@@ -391,6 +392,15 @@ def build_style_status_block(
             "In extended-thinking mode, NEVER end a turn after saying a conversational filler (such as 'تعال نكتب ده على البوردة' or 'Let us write this down') without emitting the actual whiteboard tool call (`write_math`, `write_normal_text`, `write_text`, `draw_diagram`, `draw_graph`, `draw_3d_graph`, `draw_venn_diagram`, or `draw_shape`) in the exact same turn."
         )
 
+    if learner_name and str(learner_name).strip():
+        clean_name = str(learner_name).strip()
+        base_block += (
+            f"\n\n### STUDENT IDENTITY & NATURAL PERSONALIZATION:\n"
+            f"- The student's chosen name is '{clean_name}'.\n"
+            f"- Address the student naturally and warmly by their name during greetings, key praise, or celebrating their deductions (e.g., 'أحسنت يا {clean_name}' or 'Great observation, {clean_name}!').\n"
+            f"- NEVER repeat their name mechanically or repetitively in every single sentence or turn — keep it organic, respectful, and authentic as a natural teacher would."
+        )
+
     base_block += "\n\n" + build_language_instruction_block(language_config)
     return base_block
 
@@ -402,6 +412,7 @@ def build_dynamic_tutor_instructions(
     learner_profile: str = "general",
     model_name: str = "gemini-3.8-live-extended-thinking",
     language_config: dict | None = None,
+    learner_name: str | None = None,
 ) -> str:
     return TUTOR_SYSTEM_INSTRUCTIONS + "\n\n" + build_style_status_block(
         writing_style=writing_style,
@@ -410,6 +421,7 @@ def build_dynamic_tutor_instructions(
         learner_profile=learner_profile,
         model_name=model_name,
         language_config=language_config,
+        learner_name=learner_name,
     )
 
 
@@ -514,7 +526,8 @@ class TutorAgent(Agent):
         vocal_tone: str = "natural",
         learner_profile: str = "general",
         model_name: str = "gemini-3.8-live-extended-thinking",
-    language_config: dict | None = None,
+        language_config: dict | None = None,
+        learner_name: str | None = None,
     ):
         dynamic_instructions = build_dynamic_tutor_instructions(
             writing_style=writing_style,
@@ -522,7 +535,8 @@ class TutorAgent(Agent):
             vocal_tone=vocal_tone,
             learner_profile=learner_profile,
             model_name=model_name,
-        language_config=language_config,
+            language_config=language_config,
+            learner_name=learner_name,
         )
         super().__init__(
             instructions=dynamic_instructions,
@@ -532,6 +546,7 @@ class TutorAgent(Agent):
         self._verbosity = verbosity
         self._vocal_tone = vocal_tone
         self._learner_profile = learner_profile
+        self._learner_name = str(learner_name or "").strip()
         self._active_model = model_name
         self._language_config = language_config or {
             "autoDetect": False,
@@ -1981,6 +1996,7 @@ async def entrypoint(ctx: JobContext):
         verbosity = "balanced"
         vocal_tone = "natural"
         learner_profile = "general"
+        learner_name = ""
         language_config = {
             "autoDetect": False,
             "primary": "ar-EG",
@@ -2027,6 +2043,9 @@ async def entrypoint(ctx: JobContext):
                         language_config = meta["language_config"]
                         print(f">>> [AGENT] Loaded chosen language config: {language_config}")
                         print(f">>> [AGENT] Loaded chosen learner profile: {learner_profile}")
+                    learner_name = str(meta.get("learnerName") or meta.get("learner_name") or meta.get("student_name") or "").strip()
+                    if learner_name:
+                        print(f">>> [AGENT] Loaded chosen student name: {learner_name}")
                 except Exception as ex:
                     print(f">>> [AGENT] Could not parse participant metadata: {ex}")
 
@@ -2054,6 +2073,7 @@ async def entrypoint(ctx: JobContext):
             learner_profile=learner_profile,
             model_name=selected_model,
             language_config=language_config,
+            learner_name=learner_name,
         )
 
         # Dynamically resolve the latest Gemini API key from OS AppData UI config or .env
@@ -2099,6 +2119,7 @@ async def entrypoint(ctx: JobContext):
             learner_profile=learner_profile,
             model_name=selected_model,
             language_config=language_config,
+            learner_name=learner_name,
         )
         session = AgentSession(
             llm=model,
@@ -2588,6 +2609,7 @@ async def entrypoint(ctx: JobContext):
             new_vocal_tone: str | None = None,
             new_learner_profile: str | None = None,
             new_language_config: dict | None = None,
+            new_learner_name: str | None = None,
         ):
             changed = False
             language_changed = False
@@ -2602,6 +2624,9 @@ async def entrypoint(ctx: JobContext):
                 changed = True
             if new_learner_profile and new_learner_profile != agent._learner_profile:
                 agent._learner_profile = new_learner_profile
+                changed = True
+            if new_learner_name is not None and new_learner_name != agent._learner_name:
+                agent._learner_name = str(new_learner_name).strip()
                 changed = True
             if new_language_config:
                 old_lang_json = json.dumps(getattr(agent, "_language_config", {}), sort_keys=True)
@@ -2621,6 +2646,7 @@ async def entrypoint(ctx: JobContext):
                 learner_profile=agent._learner_profile,
                 model_name=agent._active_model,
                 language_config=agent._language_config,
+                learner_name=agent._learner_name,
             )
             agent._instructions = updated_instructions
             model._opts.instructions = updated_instructions
@@ -2777,6 +2803,7 @@ async def entrypoint(ctx: JobContext):
                         new_vocal_tone=msg.get("vocalTone") or msg.get("vocal_tone") or msg.get("tone"),
                         new_learner_profile=msg.get("learnerProfile") or msg.get("learner_profile") or msg.get("profile"),
                         new_language_config=msg.get("languageConfig") or msg.get("language_config"),
+                        new_learner_name=msg.get("learnerName") or msg.get("learner_name") or msg.get("student_name"),
                     )
                 elif msg_type in ("reset_ai_memory", "reset_agent_context"):
                     print(">>> [AGENT] Received 'reset_ai_memory' command from student!")

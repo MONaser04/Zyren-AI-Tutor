@@ -13,6 +13,7 @@ import {
   saveMediaBinaryToDisk,
   saveSessionSnapshotToDisk,
   saveVerifiedGeminiApiKey,
+  toggleSessionPinOnDisk,
   validateGeminiApiKeyLive,
 } from './src/server/zyrenBackendVault.ts'
 
@@ -238,6 +239,22 @@ function createZyrenApiMiddleware() {
       return
     }
 
+    if (pathname === '/api/sessions/pin' && method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 1024 * 1024)
+        const id = String(body?.id || '')
+        if (!id) {
+          sendJson(res, 400, { ok: false, error: 'Missing session id.' })
+          return
+        }
+        const result = toggleSessionPinOnDisk(id, body?.isPinned)
+        sendJson(res, result.ok ? 200 : 404, result)
+      } catch (err: any) {
+        sendJson(res, 500, { ok: false, error: err?.message || 'Failed to toggle pin state.' })
+      }
+      return
+    }
+
     if (pathname === '/api/sessions/item' && method === 'DELETE') {
       try {
         const id = parsedUrl.searchParams.get('id') || ''
@@ -440,6 +457,7 @@ function createZyrenApiMiddleware() {
         const verbosity = parsedUrl.searchParams.get('verbosity') || 'balanced'
         const vocalTone = parsedUrl.searchParams.get('vocalTone') || 'natural'
         const learnerProfile = parsedUrl.searchParams.get('learnerProfile') || 'general'
+        const learnerName = parsedUrl.searchParams.get('learnerName') || ''
         const rawLangConfig = parsedUrl.searchParams.get('languageConfig')
         let languageConfig: any = undefined
         if (rawLangConfig) {
@@ -450,13 +468,16 @@ function createZyrenApiMiddleware() {
           }
         }
         const metadataObj: Record<string, any> = { voice, style, model, thinkingLevel, verbosity, vocalTone, learnerProfile }
+        if (learnerName) {
+          metadataObj.learnerName = learnerName
+        }
         if (languageConfig) {
           metadataObj.languageConfig = languageConfig
         }
 
         const at = new AccessToken(apiKey, apiSecret, {
           identity: `user_${Math.floor(Math.random() * 10000)}`,
-          name: 'Student',
+          name: learnerName || 'Student',
           metadata: JSON.stringify(metadataObj),
         })
         const roomId = `tutor-room-${Math.floor(Math.random() * 1000000)}`
