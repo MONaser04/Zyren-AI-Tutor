@@ -189,3 +189,38 @@ def test_diagram_node_upward_flow_and_flexible_mixed_style():
     assert "Simultaneous Pedagogical Action & Speech Protocol" in mixed_inst
     assert "ZERO VERBAL META-ANNOUNCEMENTS & PROMISES" in mixed_inst
     assert "POST-TOOL SILENCE" in mixed_inst
+
+
+def test_learner_name_dynamic_personalization_without_git_leakage():
+    """Verify learner name is dynamically injected into system prompt when provided and completely omitted when empty."""
+    # 1. When learner name is provided
+    named_inst = build_dynamic_tutor_instructions(
+        writing_style="mixed",
+        verbosity="balanced",
+        vocal_tone="natural",
+        learner_profile="general",
+        learner_name="LearnerTestName",
+    )
+    assert "STUDENT IDENTITY & NATURAL PERSONALIZATION" in named_inst
+    assert "LearnerTestName" in named_inst
+    assert "Address the student naturally and warmly by their name" in named_inst
+
+    # 2. When learner name is empty string or None (standard git release mode)
+    unnamed_inst = build_dynamic_tutor_instructions(
+        writing_style="mixed",
+        verbosity="balanced",
+        vocal_tone="natural",
+        learner_profile="general",
+        learner_name="",
+    )
+    assert "STUDENT IDENTITY & NATURAL PERSONALIZATION" not in unnamed_inst
+    assert "LearnerTestName" not in unnamed_inst
+
+    none_inst = build_dynamic_tutor_instructions(
+        writing_style="mixed",
+        verbosity="balanced",
+        vocal_tone="natural",
+        learner_profile="general",
+        learner_name=None,
+    )
+    assert "STUDENT IDENTITY & NATURAL PERSONALIZATION" not in none_inst

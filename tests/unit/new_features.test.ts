@@ -24,8 +24,11 @@ import {
 import { formatLatexForMiniPreview } from '../../src/components/SlideThumbnail';
 import {
   computeAutoFollowPan,
+  computeAutoFollowTransform,
   stepAutoFollowLerp,
+  stepAutoFollowTransformLerp,
 } from '../../src/engine/CameraFollowController';
+import { toggleSessionPinOnDisk } from '../../src/server/zyrenBackendVault';
 import { createBlankWhiteboardPage } from '../../src/components/whiteboardSession';
 
 describe('Feature 1: In-App Gemini API Key Vault & Live Verification', () => {
@@ -388,5 +391,142 @@ describe('Feature 5: Slide Embedded Images & Videos Vault + Collision & SyncEngi
     expect(removed).toBe(true);
     expect(engine.getDrawnShapes()).toHaveLength(0);
     expect(addedMedia).toHaveLength(0);
+  });
+});
+
+describe('Feature 6: Adaptive Auto-Resize & Camera Framing (Auto-Fit)', () => {
+  it('smoothly scales down zoom when a large diagram exceeds the safe viewport area', () => {
+    // Large diagram spanning 950px width x 550px height
+    const diagramTarget = {
+      x: 300,
+      y: 200,
+      width: 950,
+      height: 550,
+      kind: 'diagram',
+    };
+
+    const currentTransform = {
+      zoom: 1.5, // Student is zoomed in
+      pan: { x: 0, y: 0 },
+    };
+
+    const containerWidth = 1200;
+    const containerHeight = 700;
+    const insets = { left: 50, right: 50, top: 60, bottom: 60 };
+
+    const result = computeAutoFollowTransform(
+      diagramTarget,
+      currentTransform,
+      containerWidth,
+      containerHeight,
+      insets,
+      { autoResize: true, deadzoneRatio: 0.7, targetFillRatio: 0.78 }
+    );
+
+    expect(result.needsMotion).toBe(true);
+    expect(result.needsZoom).toBe(true);
+    // Desired zoom must be lower than 1.5 to comfortably fit 950px into ~850px safe area
+    expect(result.desiredZoom).toBeLessThan(1.2);
+    expect(result.desiredZoom).toBeGreaterThanOrEqual(0.52);
+  });
+
+  it('preserves user zoom when content fits easily within the safe area', () => {
+    const smallTarget = {
+      x: 400,
+      y: 300,
+      width: 140,
+      height: 60,
+      kind: 'rectangle',
+    };
+
+    const currentTransform = {
+      zoom: 1.0,
+      pan: { x: 0, y: 0 },
+    };
+
+    const result = computeAutoFollowTransform(
+      smallTarget,
+      currentTransform,
+      1920,
+      1080,
+      { left: 0, right: 0, top: 60, bottom: 60 },
+      { autoResize: true }
+    );
+
+    expect(result.needsZoom).toBe(false);
+    expect(result.desiredZoom).toBe(1.0);
+  });
+
+  it('interpolates both zoom and pan simultaneously in stepAutoFollowTransformLerp', () => {
+    const current = { zoom: 1.5, pan: { x: 100, y: 50 } };
+    const target = { zoom: 0.85, pan: { x: -200, y: -100 } };
+
+    const step1 = stepAutoFollowTransformLerp(current, target, 0.016, 0.14);
+    expect(step1.settled).toBe(false);
+    expect(step1.transform.zoom).toBeLessThan(1.5);
+    expect(step1.transform.zoom).toBeGreaterThan(0.85);
+    expect(step1.transform.pan.x).toBeLessThan(100);
+
+    // After large dt or multiple steps, it settles exactly
+    const stepFinal = stepAutoFollowTransformLerp(target, target, 0.016, 0.14);
+    expect(stepFinal.settled).toBe(true);
+    expect(stepFinal.transform.zoom).toBe(0.85);
+    expect(stepFinal.transform.pan.x).toBe(-200);
+  });
+});
+
+describe('Feature 7: Session Pinning & Eviction Immunity', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyren-pin-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('toggles session pin state and prioritizes pinned sessions at the top', () => {
+    // 1. Create two sessions
+    saveSessionSnapshotToDisk(
+      {
+        id: 'session-alpha',
+        title: 'Alpha Session',
+        pages: [{ id: 'p1', shapes: [], handwriting: [], userPaths: [], userTexts: [] }],
+        updatedAt: 1000,
+      },
+      { appDataDir: tempDir }
+    );
+
+    saveSessionSnapshotToDisk(
+      {
+        id: 'session-beta',
+        title: 'Beta Session',
+        pages: [{ id: 'p1', shapes: [], handwriting: [], userPaths: [], userTexts: [] }],
+        updatedAt: 2000,
+      },
+      { appDataDir: tempDir }
+    );
+
+    // Initially beta is first because updatedAt 2000 > 1000
+    let index = listSavedSessionsFromDisk({ appDataDir: tempDir });
+    expect(index.sessions[0].id).toBe('session-beta');
+
+    // 2. Pin alpha session
+    const pinRes = toggleSessionPinOnDisk('session-alpha', true, { appDataDir: tempDir });
+    expect(pinRes.ok).toBe(true);
+    expect(pinRes.isPinned).toBe(true);
+
+    // Alpha is now at the top despite older updatedAt!
+    index = listSavedSessionsFromDisk({ appDataDir: tempDir });
+    expect(index.sessions[0].id).toBe('session-alpha');
+    expect(index.sessions[0].isPinned).toBe(true);
+
+    // 3. Unpin alpha session
+    const unpinRes = toggleSessionPinOnDisk('session-alpha', false, { appDataDir: tempDir });
+    expect(unpinRes.isPinned).toBe(false);
+
+    index = listSavedSessionsFromDisk({ appDataDir: tempDir });
+    expect(index.sessions[0].id).toBe('session-beta');
   });
 });

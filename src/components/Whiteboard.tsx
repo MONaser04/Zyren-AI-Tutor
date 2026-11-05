@@ -41,9 +41,12 @@ import { ChatDrawer, type ChatMessage, type ChatAttachment } from './ChatDrawer'
 import { ApiKeyManagerModal, type ApiKeyStatusInfo } from './ApiKeyModal';
 import {
   computeAutoFollowPan,
+  computeAutoFollowTransform,
   stepAutoFollowLerp,
+  stepAutoFollowTransformLerp,
   type WritingFocusTarget,
 } from '../engine/CameraFollowController';
+import { toggleSessionPinDualTier } from '../services/sessionAutoSave';
 import {
   createSessionId,
   hasSubstantiveSessionContent,
@@ -106,6 +109,7 @@ interface WhiteboardProps {
   verbosity?: VerbosityMode;
   vocalTone?: VocalToneMode;
   learnerProfile?: LearnerProfileMode;
+  learnerName?: string;
   onUpdateSpeakingStyle?: (next: SpeakingStyleConfig) => void;
   isSpeakerMuted?: boolean;
   onToggleSpeakerMute?: () => void;
@@ -128,6 +132,7 @@ export function Whiteboard({
   verbosity = 'balanced',
   vocalTone = 'natural',
   learnerProfile = 'general',
+  learnerName = '',
   onUpdateSpeakingStyle,
   isSpeakerMuted = false,
   onToggleSpeakerMute,
@@ -211,9 +216,21 @@ export function Whiteboard({
   });
   const isAutoFollowRef = useRef<boolean>(isAutoFollowEnabled);
   isAutoFollowRef.current = isAutoFollowEnabled;
+
+  const [isAutoResizeEnabled, setIsAutoResizeEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('AI_TUTOR_AUTO_RESIZE');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const isAutoResizeRef = useRef<boolean>(isAutoResizeEnabled);
+  isAutoResizeRef.current = isAutoResizeEnabled;
+
   const lastManualCameraMoveRef = useRef<number>(-Infinity);
   const manualCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoFollowTargetPanRef = useRef<{ x: number; y: number } | null>(null);
+  const autoFollowTargetTransformRef = useRef<{ zoom: number; pan: { x: number; y: number } } | null>(null);
   const autoFollowRafRef = useRef<number | null>(null);
   const lastFocusTargetRef = useRef<WritingFocusTarget | null>(null);
   const isSwitchingSlideRef = useRef<boolean>(false);
@@ -1737,34 +1754,38 @@ export function Whiteboard({
     }
   }, [room, room?.state, broadcastBoardStateSync]);
 
-  // --- Live Writing Auto-Follow Camera Controller ---
-  const startAutoFollowGlide = useCallback((desiredPanX: number, desiredPanY: number) => {
-    autoFollowTargetPanRef.current = { x: desiredPanX, y: desiredPanY };
+  // --- Live Writing Auto-Follow & Auto-Resize Camera Controller ---
+  const startAutoFollowGlide = useCallback((desiredPanX: number, desiredPanY: number, desiredZoom?: number) => {
+    const targetZoom = Number.isFinite(desiredZoom) ? desiredZoom! : transformRef.current.zoom;
+    autoFollowTargetTransformRef.current = {
+      zoom: targetZoom,
+      pan: { x: desiredPanX, y: desiredPanY },
+    };
     if (autoFollowRafRef.current !== null) return;
 
     let prevTs = performance.now();
     const tick = (nowTs: number) => {
-      const targetPan = autoFollowTargetPanRef.current;
+      const targetTransform = autoFollowTargetTransformRef.current;
       if (
-        !targetPan ||
+        !targetTransform ||
         !isAutoFollowRef.current ||
         (Number.isFinite(lastManualCameraMoveRef.current) && nowTs - lastManualCameraMoveRef.current < 1500)
       ) {
         autoFollowRafRef.current = null;
-        autoFollowTargetPanRef.current = null;
+        autoFollowTargetTransformRef.current = null;
         return;
       }
 
       const dt = (nowTs - prevTs) / 1000;
       prevTs = nowTs;
 
-      const step = stepAutoFollowLerp(transformRef.current.pan, targetPan, dt, 0.14);
-      transformRef.current = { zoom: transformRef.current.zoom, pan: step.pan };
-      setTransform((prev) => ({ zoom: prev.zoom, pan: step.pan }));
+      const step = stepAutoFollowTransformLerp(transformRef.current, targetTransform, dt, 0.14);
+      transformRef.current = step.transform;
+      setTransform(step.transform);
 
       if (step.settled) {
         autoFollowRafRef.current = null;
-        autoFollowTargetPanRef.current = null;
+        autoFollowTargetTransformRef.current = null;
         return;
       }
       autoFollowRafRef.current = requestAnimationFrame(tick);
@@ -1792,9 +1813,20 @@ export function Whiteboard({
         bottom: isToolbarPinnedRef.current ? 78 : 24,
       };
 
-      const res = computeAutoFollowPan(target, transformRef.current, cw, ch, insets, 0.68);
-      if (res.needsPan) {
-        startAutoFollowGlide(res.desiredPanX, res.desiredPanY);
+      const res = computeAutoFollowTransform(
+        target,
+        transformRef.current,
+        cw,
+        ch,
+        insets,
+        {
+          deadzoneRatio: 0.68,
+          autoResize: isAutoResizeRef.current,
+          targetFillRatio: 0.78,
+        }
+      );
+      if (res.needsMotion) {
+        startAutoFollowGlide(res.desiredPanX, res.desiredPanY, res.desiredZoom);
       }
     },
     [startAutoFollowGlide]
@@ -1838,7 +1870,7 @@ export function Whiteboard({
       if (autoFollowRafRef.current !== null) {
         cancelAnimationFrame(autoFollowRafRef.current);
         autoFollowRafRef.current = null;
-        autoFollowTargetPanRef.current = null;
+        autoFollowTargetTransformRef.current = null;
       }
       if (manualCooldownTimerRef.current) {
         clearTimeout(manualCooldownTimerRef.current);
@@ -1853,6 +1885,43 @@ export function Whiteboard({
         : '⏸️ Live Writing Auto-Follow OFF — free manual camera'
     );
   }, [handleWritingFocus, showToast]);
+
+  const toggleAutoResize = useCallback(() => {
+    const next = !isAutoResizeRef.current;
+    isAutoResizeRef.current = next;
+    setIsAutoResizeEnabled(next);
+    try {
+      localStorage.setItem('AI_TUTOR_AUTO_RESIZE', String(next));
+    } catch {
+      // ignore
+    }
+    showToast(
+      next
+        ? '📐 Adaptive Auto-Resize ON — auto zooms & frames diagrams'
+        : '📐 Adaptive Auto-Resize OFF — fixed zoom level'
+    );
+  }, [showToast]);
+
+  const handleTogglePinRecent = useCallback(
+    async (sessionId: string, nextPinned: boolean) => {
+      try {
+        await toggleSessionPinDualTier(sessionId, nextPinned);
+        setRecentSessions((prev) => {
+          const updated = prev.map((s) => (s.id === sessionId ? { ...s, isPinned: nextPinned } : s));
+          return updated.sort((a, b) => {
+            const aPin = Boolean(a.isPinned);
+            const bPin = Boolean(b.isPinned);
+            if (bPin !== aPin) return bPin ? 1 : -1;
+            return b.timestamp - a.timestamp;
+          });
+        });
+        showToast(nextPinned ? '📌 Session pinned to top' : '📌 Session unpinned');
+      } catch (err: any) {
+        console.warn('[WHITEBOARD] Failed to toggle session pin:', err);
+      }
+    },
+    [showToast]
+  );
 
   // Stable Callback Refs for SyncEngine to guarantee permanent singleton lifecycle
   const addNewPageRef = useRef(addNewPage);
@@ -3610,6 +3679,7 @@ export function Whiteboard({
         activeSessionId={activeSessionId}
         onLoadRecent={handleLoadRecent}
         onDeleteRecent={handleDeleteRecent}
+        onTogglePinRecent={handleTogglePinRecent}
         onOpenVoiceModal={() => setIsVoiceModalOpen(true)}
         onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
         autoSaveState={autoSaveState}
@@ -4641,6 +4711,39 @@ export function Whiteboard({
             <span>Fit</span>
           </button>
 
+          {/* Toggle Live Writing Adaptive Auto-Resize */}
+          <button
+            onClick={toggleAutoResize}
+            title={
+              isAutoResizeEnabled
+                ? 'Adaptive Auto-Resize is ON: Automatically zooms and frames diagrams & notes comfortably (Click to turn OFF)'
+                : 'Adaptive Auto-Resize is OFF: Camera follows writing with fixed zoom level (Click to turn ON)'
+            }
+            style={{
+              padding: '0 9px',
+              height: 28,
+              borderRadius: 6,
+              border: isAutoResizeEnabled
+                ? '1px solid rgba(96, 165, 250, 0.55)'
+                : '1px solid rgba(255, 255, 255, 0.14)',
+              backgroundColor: isAutoResizeEnabled
+                ? 'rgba(96, 165, 250, 0.22)'
+                : 'rgba(255, 255, 255, 0.06)',
+              color: isAutoResizeEnabled ? '#60A5FA' : '#94A3B8',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              fontFamily: "'Inter', sans-serif",
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>📐</span>
+            <span>{isAutoResizeEnabled ? 'Auto-Fit ON' : 'Auto-Fit OFF'}</span>
+          </button>
+
           {/* Toggle Live Writing Auto-Follow Camera */}
           <button
             onClick={toggleAutoFollow}
@@ -4821,10 +4924,12 @@ export function Whiteboard({
         verbosity={verbosity}
         vocalTone={vocalTone}
         learnerProfile={learnerProfile}
+        learnerName={learnerName}
         onUpdateSpeakingStyle={(next) => {
           onUpdateSpeakingStyle?.(next);
           if (room && room.state === 'connected') {
             try {
+              const cleanLearnerName = (next.learnerName || '').trim();
               room.localParticipant.setMetadata(
                 JSON.stringify({
                   voice: currentVoice,
@@ -4834,6 +4939,7 @@ export function Whiteboard({
                   verbosity: next.verbosity,
                   vocalTone: next.vocalTone,
                   learnerProfile: next.learnerProfile,
+                  learnerName: cleanLearnerName,
                 })
               );
 
@@ -4842,6 +4948,7 @@ export function Whiteboard({
                 verbosity: next.verbosity,
                 vocalTone: next.vocalTone,
                 learnerProfile: next.learnerProfile,
+                learnerName: cleanLearnerName,
                 style: currentStyle,
               });
               const encoder = new TextEncoder();
