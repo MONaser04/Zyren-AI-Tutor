@@ -507,8 +507,8 @@ export class SyncEngine {
 
     // 1. Calculate true dimensions using the layout engine
     const bounds = CollisionDetector.getShapeBounds(p);
-    const width = bounds.width;
-    const height = bounds.height;
+    let width = bounds.width;
+    let height = bounds.height;
 
     // 2. Find clean, non-overlapping position clamped strictly inside safe margins
     let finalX = rewriteSlot ? rewriteSlot.x : p.x;
@@ -730,6 +730,11 @@ export class SyncEngine {
           /handwritten|handwriting/i.test(diagramOptions.root || '');
 
         const subShapes = DiagramLayoutEngine.generateShapes(diagramOptions);
+        let dMinX = Infinity;
+        let dMinY = Infinity;
+        let dMaxX = -Infinity;
+        let dMaxY = -Infinity;
+
         for (const sub of subShapes) {
           const subWithDiagram = { ...sub, diagramId: shapeWithZIndex.id };
           this.drawnShapes.push(subWithDiagram);
@@ -738,6 +743,11 @@ export class SyncEngine {
           const subW = sub.width ?? 150;
           const subH = sub.height ?? 60;
           const subOpts = sub.options || {};
+
+          dMinX = Math.min(dMinX, subX);
+          dMinY = Math.min(dMinY, subY);
+          dMaxX = Math.max(dMaxX, subX + subW, sub.toX ?? subX);
+          dMaxY = Math.max(dMaxY, subY + subH, sub.toY ?? subY);
 
           if (sub.shapeType === 'rectangle') {
             this.renderRectangleWithLabel(subX, subY, subW, subH, subOpts);
@@ -752,6 +762,13 @@ export class SyncEngine {
               writingStyle: subOpts.writingStyle || (isHandwriting ? 'handwriting' : undefined),
             });
           }
+        }
+
+        if (Number.isFinite(dMinX) && Number.isFinite(dMaxX) && dMaxX > dMinX) {
+          finalX = dMinX;
+          finalY = dMinY;
+          width = dMaxX - dMinX;
+          height = Math.max(80, dMaxY - dMinY);
         }
         break;
       }
