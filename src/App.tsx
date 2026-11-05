@@ -2,6 +2,14 @@ import { useState, useEffect } from 'react';
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react';
 import '@livekit/components-styles';
 import { Whiteboard } from './components/Whiteboard';
+import {
+  ApiKeyOnboardingGate,
+  fetchApiKeyStatus,
+  type ApiKeyStatusInfo,
+} from './components/ApiKeyModal';
+import type { VerbosityMode, VocalToneMode, LearnerProfileMode, SpeakingStyleConfig } from './components/PersonaSelectorModal';
+import { DEFAULT_LANGUAGE_CONFIG } from './components/LanguageSelectorModal';
+import type { LanguageConfig } from './types';
 
 function App() {
   const [token, setToken] = useState<string>('');
@@ -12,6 +20,8 @@ function App() {
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'>('idle');
   const [resourcesLoaded, setResourcesLoaded] = useState(false);
   const [forceDemo, setForceDemo] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatusInfo | null>(null);
+  const [apiKeyChecked, setApiKeyChecked] = useState<boolean>(false);
   const [selectedVoice, setSelectedVoice] = useState<string>(() => {
     return localStorage.getItem('AI_TUTOR_SELECTED_VOICE') || 'Aoede';
   });
@@ -23,6 +33,23 @@ function App() {
   });
   const [thinkingLevel, setThinkingLevel] = useState<string>(() => {
     return localStorage.getItem('AI_TUTOR_THINKING_LEVEL') || 'high';
+  });
+  const [verbosity, setVerbosity] = useState<VerbosityMode>(() => {
+    return (localStorage.getItem('AI_TUTOR_VERBOSITY') as VerbosityMode) || 'balanced';
+  });
+  const [vocalTone, setVocalTone] = useState<VocalToneMode>(() => {
+    return (localStorage.getItem('AI_TUTOR_VOCAL_TONE') as VocalToneMode) || 'natural';
+  });
+  const [learnerProfile, setLearnerProfile] = useState<LearnerProfileMode>(() => {
+    return (localStorage.getItem('AI_TUTOR_LEARNER_PROFILE') as LearnerProfileMode) || 'general';
+  });
+  const [languageConfig, setLanguageConfig] = useState<LanguageConfig>(() => {
+    try {
+      const saved = localStorage.getItem('AI_TUTOR_LANGUAGE_CONFIG');
+      return saved ? JSON.parse(saved) : DEFAULT_LANGUAGE_CONFIG;
+    } catch {
+      return DEFAULT_LANGUAGE_CONFIG;
+    }
   });
   const [isSpeakerMuted, setIsSpeakerMuted] = useState<boolean>(() => {
     return localStorage.getItem('AI_TUTOR_SPEAKER_MUTED') === 'true';
@@ -53,6 +80,20 @@ function App() {
     setThinkingLevel(newLevel);
   };
 
+  const handleUpdateSpeakingStyle = (next: SpeakingStyleConfig) => {
+    localStorage.setItem('AI_TUTOR_VERBOSITY', next.verbosity);
+    localStorage.setItem('AI_TUTOR_VOCAL_TONE', next.vocalTone);
+    localStorage.setItem('AI_TUTOR_LEARNER_PROFILE', next.learnerProfile);
+    setVerbosity(next.verbosity);
+    setVocalTone(next.vocalTone);
+    setLearnerProfile(next.learnerProfile);
+  };
+
+  const handleUpdateLanguageConfig = (next: LanguageConfig) => {
+    localStorage.setItem('AI_TUTOR_LANGUAGE_CONFIG', JSON.stringify(next));
+    setLanguageConfig(next);
+  };
+
   const handleToggleSpeakerMute = () => {
     setIsSpeakerMuted(prev => {
       const next = !prev;
@@ -61,14 +102,84 @@ function App() {
     });
   };
 
+  // Check Gemini API Key status on boot (In-App Vault or .env)
   useEffect(() => {
+    let active = true;
+    fetchApiKeyStatus()
+      .then((status) => {
+        if (!active) return;
+        setApiKeyStatus(status);
+        setApiKeyChecked(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setApiKeyStatus({ configured: false, source: 'none', maskedKey: null });
+        setApiKeyChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleApiKeyUpdated = (nextStatus: ApiKeyStatusInfo) => {
+    setApiKeyStatus(nextStatus);
+    if (forceDemo && nextStatus.configured) {
+      setForceDemo(false);
+      setError(null);
+      setIsConnecting(true);
+      setConnectionState('idle');
+    }
+  };
+
+  const handleApiKeyDeleted = () => {
+    setToken('');
+    setUrl('');
+    setForceDemo(false);
+    setError(null);
+    setIsConnecting(true);
+    setConnectionState('idle');
+    setApiKeyStatus({ configured: false, source: 'none', maskedKey: null });
+  };
+
+  // Listen for agent readiness event to re-dispatch room if created early
+  useEffect(() => {
+    const handleReconnect = () => {
+      console.log('[App] Received zyren-reconnect-room event, refreshing room token...');
+      setRetryCount(prev => prev + 1);
+    };
+    window.addEventListener('zyren-reconnect-room', handleReconnect);
+    return () => window.removeEventListener('zyren-reconnect-room', handleReconnect);
+  }, []);
+
+  useEffect(() => {
+    if (!apiKeyChecked || forceDemo || !apiKeyStatus?.configured) {
+      return;
+    }
+
     let mounted = true;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const waitForAgent = async () => {
+      // Check if agent is registered before creating room (up to 60 attempts * 1s = 60s)
+      for (let i = 0; i < 60; i++) {
+        if (!mounted) return;
+        try {
+          const statusRes = await fetch('/api/agent-status');
+          if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (statusData.ready) break;
+          }
+        } catch {
+          // ignore network glitch while starting
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    };
 
     const fetchToken = async () => {
       try {
         const res = await fetch(
-          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}`
+          `/api/token?voice=${encodeURIComponent(selectedVoice)}&style=${encodeURIComponent(writingStyle)}&model=${encodeURIComponent(selectedModel)}&thinkingLevel=${encodeURIComponent(thinkingLevel)}&verbosity=${encodeURIComponent(verbosity)}&vocalTone=${encodeURIComponent(vocalTone)}&learnerProfile=${encodeURIComponent(learnerProfile)}&languageConfig=${encodeURIComponent(JSON.stringify(languageConfig))}`
         );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -118,12 +229,18 @@ function App() {
       }
     };
 
-    fetchToken();
+    const startFlow = async () => {
+      await waitForAgent();
+      if (mounted) {
+        await fetchToken();
+      }
+    };
+    startFlow();
 
     return () => {
       cleanup();
     };
-  }, [retryCount, selectedVoice, writingStyle]);
+  }, [retryCount, apiKeyChecked, apiKeyStatus?.configured, forceDemo]);
 
   // Wait for resources (font, etc.) to load before showing the whiteboard
   useEffect(() => {
@@ -144,10 +261,38 @@ function App() {
           onSelectVoice={handleSelectVoice}
           currentStyle={writingStyle}
           onSelectStyle={handleSelectStyle}
+          currentModel={selectedModel}
+          onSelectModel={handleSelectModel}
+          currentThinkingLevel={thinkingLevel}
+          onSelectThinkingLevel={handleSelectThinkingLevel}
+          verbosity={verbosity}
+          vocalTone={vocalTone}
+          learnerProfile={learnerProfile}
+          onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
           isSpeakerMuted={isSpeakerMuted}
           onToggleSpeakerMute={handleToggleSpeakerMute}
+          apiKeyStatus={apiKeyStatus}
+          onApiKeyUpdated={handleApiKeyUpdated}
+          onApiKeyDeleted={handleApiKeyDeleted}
+        languageConfig={languageConfig}
+        onUpdateLanguageConfig={handleUpdateLanguageConfig}
         />
       </div>
+    );
+  }
+
+  // First-Time / Missing Gemini API Key Welcome Setup Gate
+  if (apiKeyChecked && !apiKeyStatus?.configured) {
+    return (
+      <ApiKeyOnboardingGate
+        onKeyActivated={(nextStatus) => {
+          setApiKeyStatus(nextStatus);
+          setError(null);
+          setIsConnecting(true);
+          setConnectionState('idle');
+        }}
+        onContinueOffline={() => setForceDemo(true)}
+      />
     );
   }
 
@@ -156,7 +301,7 @@ function App() {
       <div style={{ padding: 40, textAlign: 'center', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div>
           <div style={{ fontSize: 48, marginBottom: 16, color: '#4ECDC4' }}>🎓</div>
-          <h2>Connecting to ZYREN AI Tutor...</h2>
+          <h2>Connecting to ŽYREN AI Tutor...</h2>
           <p>Initializing LiveKit room connection...</p>
           <div style={{ border: '1px solid #4ECDC4', borderRadius: 8, padding: 20, maxWidth: 320, margin: '20px auto 0' }}>
             <p>Attempt {retryCount + 1}/{MAX_RETRIES}</p>
@@ -292,6 +437,7 @@ function App() {
 
   return (
     <LiveKitRoom
+      key={token}
       video={false}
       audio={false}
       token={token}
@@ -308,8 +454,17 @@ function App() {
         onSelectModel={handleSelectModel}
         currentThinkingLevel={thinkingLevel}
         onSelectThinkingLevel={handleSelectThinkingLevel}
+        verbosity={verbosity}
+        vocalTone={vocalTone}
+        learnerProfile={learnerProfile}
+        onUpdateSpeakingStyle={handleUpdateSpeakingStyle}
         isSpeakerMuted={isSpeakerMuted}
         onToggleSpeakerMute={handleToggleSpeakerMute}
+        apiKeyStatus={apiKeyStatus}
+        onApiKeyUpdated={handleApiKeyUpdated}
+        onApiKeyDeleted={handleApiKeyDeleted}
+        languageConfig={languageConfig}
+        onUpdateLanguageConfig={handleUpdateLanguageConfig}
       />
       <RoomAudioRenderer muted={isSpeakerMuted} volume={isSpeakerMuted ? 0 : 1} />
     </LiveKitRoom>

@@ -2,9 +2,9 @@
 
 <div align="center">
 
-![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.0.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
+![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.2.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
 ![Build Passing](https://img.shields.io/badge/build-passing-10B981?style=for-the-badge&logo=githubactions&logoColor=white)
-![Tests Passing](https://img.shields.io/badge/tests-55%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
+![Tests Passing](https://img.shields.io/badge/tests-101%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
 ![LiveKit WebRTC](https://img.shields.io/badge/LiveKit-WebRTC%20RTC-00D26A?style=for-the-badge&logo=livekit&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Gemini_Live-Multimodal%20Realtime-EA4335?style=for-the-badge&logo=google&logoColor=white)
 ![React 18](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=for-the-badge&logo=react&logoColor=black)
@@ -13,10 +13,10 @@
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 
 <p align="center">
-  <b>A state-of-the-art, real-time Socratic AI tutoring workstation combining bidirectional low-latency voice streaming, computer vision screen perception, an intelligent digital blackboard, deterministic diagram auto-layout, vector Venn diagrams, and a cutting-edge 3D WebGL Marching Cubes geometry engine.</b>
+  <b>A state-of-the-art, real-time Socratic AI tutoring workstation combining bidirectional low-latency voice streaming, autonomous blackboard camera tracking, computer vision perception, multi-slide live thumbnails, deterministic multi-directional diagrams, vector Venn diagrams, interactive in-slide media with video inspection, and a cutting-edge 3D WebGL Marching Cubes geometry engine.</b>
 </p>
 
-[Key Features](#-key-features) • [Architecture](#-system-architecture) • [3D & Geometry Engine](#-3d-mathematical-geometry-engine) • [Quick Start](#-quick-start) • [Configuration](#-configuration) • [Testing](#-testing--quality-assurance)
+[Key Features](#-key-features) • [Architecture](#-system-architecture) • [3D & Geometry Engine](#-3d-mathematical-geometry-engine) • [Quick Start](#-quick-start) • [Configuration](#-configuration) • [Testing & Quality Assurance](#-testing--quality-assurance)
 
 </div>
 
@@ -28,9 +28,11 @@
 
 Unlike conventional chatbots or disjointed speech interfaces, **AI Tutor** acts as a genuine classroom instructor standing in front of a digital blackboard:
 - **Speaks and Listens Simultaneously**: Full-duplex conversation with zero awkward pauses, immediate interruptibility, and 30 distinct vocal personas powered by Google Gemini Live Realtime.
-- **Multimodal Perception**: Sees student screen-shares, camera feeds, pasted screenshots, and uploaded PDF/image assignments in real time.
-- **Dynamic Board Drawing**: Real-time chalk handwriting, step-by-step LaTeX formula typesetting, interactive 2D calculus curves with shaded definite integrals, deterministic concept trees and flowcharts, vector Venn diagrams, and interactive 3D WebGL solids with orbit controls.
-- **Pedagogical Scaffolding**: Built around the Socratic method and cognitive code-switching — guiding students turn-by-turn with targeted micro-steps rather than handing out unearned answers.
+- **Autonomous Blackboard Camera Tracking**: Intelligently tracks the tutor's live handwriting, formulas, and diagrams, smoothly framing the active learning focal point without disrupting user zoom.
+- **Multimodal Video & Document Perception**: Sees student screen-shares, webcams, pasted assignment snapshots, high-resolution slide images, and HTML5 video lectures with frame-accurate timecode inspection.
+- **Dynamic Board Drawing & Auto-Layout**: Real-time chalk handwriting, step-by-step LaTeX formula typesetting, interactive 2D calculus curves with shaded definite integrals, multi-directional flowcharts (supporting ascending loops), vector Venn diagrams, and interactive 3D WebGL solids with orbit controls.
+- **Socratic Pedagogical Scaffolding**: Built around the Socratic method and cognitive code-switching — guiding students turn-by-turn with targeted micro-steps rather than handing out unearned answers.
+- **Multimodal Speech Stability Benchmark & Language Hierarchy**: Configure primary and ordered secondary languages with official Google Gemini Live acoustic stability calibration.
 
 ---
 
@@ -42,12 +44,16 @@ The platform runs as a coordinated tripartite system managed by an autonomous Py
 flowchart TB
     subgraph Client ["🖥️ Modern Web Frontend (React 18 + Vite + TypeScript)"]
         UI["Interactive Blackboard Canvas (1080p Virtual World)"]
+        CamCtrl["CameraFollowController (Autonomous Blackboard Tracking)"]
+        MediaLayer["SlideMediaOverlay (In-Slide Video Player & Audio Tap)"]
+        ThumbStrip["SlidePanel & SlideThumbnail (Live 16:9 Previews)"]
         GLOverlay["3D WebGL Card (Three.js + Marching Cubes)"]
         GraphOverlay["2D Calculus Engine (Area Shading & Function Plot)"]
         VennEngine["Vector Venn Overlay (SVG Boolean Masks)"]
-        DiagramEngine["DiagramLayoutEngine (Trees, Flowcharts, Comparisons)"]
+        DiagramEngine["DiagramLayoutEngine 2.0 (Trees, Multi-Directional Flowcharts)"]
+        CollisionEng["CollisionDetector (2-Column Flow & Lookahead Spacing)"]
         SyncEngine["SyncEngine (Speech-to-Stroke Clock Alignment)"]
-        VisionStream["Screen Share & File Ingestion Pipeline"]
+        VaultClient["Session AutoSave & Local Storage Vault (IndexedDB + Disk)"]
     end
 
     subgraph Transport ["📡 Real-Time WebRTC Media Fabric (LiveKit Server)"]
@@ -59,21 +65,24 @@ flowchart TB
     subgraph Agent ["🤖 AI Tutor Worker (Python 3.10+ & LiveKit Agents)"]
         TutorCore["Socratic Tutor Agent Core"]
         PromptEngine["5-Mode Multilingual Matrix & Code-Switching Engine"]
+        ConfigStore["Persistent ConfigStore (agent_config.json)"]
         ToolExecutor["Atomic Whiteboard Tool Handlers"]
         GeminiWS["Google Gemini Live Realtime WebSocket Session"]
     end
 
-    Client <-->|"Audio I/O"| AudioTrack
-    Client -->|"Video / Frame Capture"| VideoTrack
-    Client <-->|"Board State, Slide Deck & Actions"| DataChannel
+    Client <-->|"Audio I/O & In-Slide Video Audio Tap"| AudioTrack
+    Client -->|"Video / Frame Capture (1 FPS Vision)"| VideoTrack
+    Client <-->|"Board State, Slide Deck, Tool Calls & Sync"| DataChannel
 
     AudioTrack <-->|"Realtime Audio"| TutorCore
     VideoTrack -->|"Multimodal Vision"| TutorCore
     DataChannel <-->|"Tool Calls & Board Sync"| ToolExecutor
 
     TutorCore <-->|"Bidirectional Realtime Stream"| GeminiWS
-    ToolExecutor -->|"Scheduled Draw Commands"| DataChannel
+    ToolExecutor -->|"Scheduled Draw Commands (SILENT)"| DataChannel
     SyncEngine -->|"Render Operations"| UI
+    SyncEngine -->|"Focal Point Tracking"| CamCtrl
+    SyncEngine -->|"Media Playback & Inspection"| MediaLayer
     SyncEngine -->|"3D Meshes"| GLOverlay
     SyncEngine -->|"2D Curves & Shading"| GraphOverlay
     SyncEngine -->|"Venn Masks"| VennEngine
@@ -86,32 +95,70 @@ Launch the entire ecosystem with a single terminal command:
 python main.py
 ```
 `main.py` automatically:
-1. Validates `.env` and checks for your `GEMINI_API_KEY`.
+1. Validates `.env` and checks for your `GEMINI_API_KEY` (or prompts onboarding via the In-App Vault).
 2. Launches the local **LiveKit WebRTC Server** (`--dev` mode on port `7880`).
-3. Starts the **Python Voice Agent** worker in its isolated virtual environment with live auto-reload.
+3. Starts the **Python Voice Agent** worker in its isolated virtual environment with live auto-reload and settings change tracking.
 4. Boots the **Vite Dev Server** (port `5173`) and checks dependencies.
-5. Launches your default web browser and displays both Localhost and LAN/Mobile network URLs.
+5. Launches the app in standalone desktop app window mode (`--app` via Edge/Chrome) or default browser.
 6. Gracefully terminates all background sub-processes on `Ctrl+C`.
 
 ---
 
 ## ✨ Key Features
 
-### 🎙️ 1. Ultra-Low Latency Conversational Voice & Dynamic Model Selection
+### 🎙️ 1. Ultra-Low Latency Conversational Voice & Extended Thinking
 - **Gemini Live Realtime Streaming**: Instant conversational turn-taking with sub-second response times.
 - **Dynamic Mid-Session Model Switcher**:
-  - `gemini-3.8-live-extended-thinking` (Configurable thinking levels: `low`, `medium`, `high`)
-  - `gemini-3.8-live` (Ultra-low latency streaming voice)
+  - `gemini-3.8-live-extended-thinking` (Configurable thinking levels: `minimal`, `low`, `medium`, `high`)
+  - `gemini-3.8-live` (Ultra-low latency streaming voice & native tool execution)
   - `gemini-3.1-flash-live-preview` (Agile multimodal preview with thinking depth)
 - **Zero-Disconnection Voice Switching**: Audition and switch between **30 Gemini vocal personas** (Aoede, Puck, Charon, Kore, Fenrir, Zephyr, etc.) mid-call with instant audio preview playback and favorites filtering.
+- **Simultaneous Action & Speech Protocol**: Whiteboard tool calls are emitted concurrently at the exact first word of explanation; zero verbal filler promises (*"سأكتب ذلك على السبورة"*) and zero retroactive narrations (*"وها قد كتبتها"*).
 - **Turn-0 Memory Reset**: Hard reset of Gemini Live WebSocket and agent memory without reloading the page.
 
-### 👁️ 2. Real-Time Multimodal Vision & File Ingestion
-- **Continuous Visual Awareness**: Real-time perception of screen shares, webcams, code editors, and textbooks.
-- **Multimodal File Upload**: Drag-and-drop or upload PDF exercises, textbook chapters, and high-res assignment photos directly into the Chat Drawer.
-- **Clipboard Paste (Ctrl+V)**: Paste homework screenshots or diagrams directly from your clipboard to immediately prompt the tutor.
+### 🌐 2. Multilingual Hierarchy & Speech Stability Benchmark
+- **Speech Language Priority Configuration (`LanguageSelectorModal`)**:
+  - **Primary Conversational Language**: Select the base instructional language (Egyptian Arabic, Standard Arabic, English, German, French, Spanish, etc.).
+  - **Secondary Languages Priority Hierarchy**: Add, remove, and reorder secondary languages (`Priority #1`, `Priority #2`, etc.) for terminology, definitions, and code-switching.
+- **Official Google Gemini Live Stability Calibration**:
+  - 🟢 **1 Language**: Ultra-Stable (Optimal) — Maximum acoustic accuracy, zero switching latency, 100% deterministic speech recognition.
+  - 🔵 **2 Languages**: Highly Stable (Recommended) — Seamless bilingual code-switching; pairing with English provides highest stability.
+  - 🟡 **3 Languages**: Moderate Stability — Functional with strict secondary hierarchy; minor chance of acoustic overlap.
+  - 🔴 **4+ Languages**: Experimental / Low Stability — Elevated risk of phonetic drift and voice accent bleeding.
+- **Single Exclusive Accessibility Lifeline**: If a student indicates they cannot understand the active language, the tutor replies with a single rescue sentence pointing to the 🌐 language button on the toolbar, then immediately resumes the active language with strict anti-jailbreak guardrails.
+- **Persistent Configuration Store (`agent/config_store.py`)**: Remembers language priorities, active model, vocal tone, verbosity, and learner profile across reboots.
 
-### 📐 3. Smart 3D WebGL Mathematical Geometry Engine
+### 🎥 3. Autonomous Blackboard Camera Tracking (`CameraFollowController`)
+- **Smart Focal Point Navigation**: Automatically pans the viewport to follow where the AI Tutor writes on the 1920x1080 canvas.
+- **Deadzone-Aware Smooth Framing**: Evaluates a comfortable viewing deadzone ratio (68%) and adjusts pan without altering the student's chosen zoom level.
+- **Manual Override Freedom**: Student can pan and zoom freely using mouse, touchpad, or touch gestures; auto-follow smoothly yields to user interaction.
+
+### 🎬 4. In-Slide Media Studio & Multimodal Deep Perception (`SlideMediaOverlay`)
+- **Embedded Slide Images & Videos**: Drag-and-drop or paste images and HTML5 videos directly onto whiteboard slides.
+- **Interactive Player Controls**: Timeline scrubbing, play/pause, volume, speed, and frame-stepping directly on the board.
+- **Live Video Audio Tap**: WebAudio 16kHz PCM tap streams playing video audio directly to Gemini Live API so the tutor can listen and discuss recorded lectures.
+- **Deep Multimodal Inspection (`inspect_slide_media`)**: Autonomous tool allows the tutor to inspect specific slide media, examine small text/equations, and analyze video timeline timestamps (MM:SS).
+
+### 📑 5. Visual Slide Deck & Continuous Auto-Save Vault
+- **Live 16:9 Thumbnail Strip (`SlidePanel` & `SlideThumbnail`)**: Miniature real-time canvas renderers showing exact shapes, KaTeX equations, and handwriting per slide.
+- **Local AppData Backend Vault (`zyrenBackendVault.ts`)**: Cross-platform atomic JSON persistence (`%APPDATA%/ZYREN_AI_Tutor` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux).
+- **Dual IndexedDB + Disk Auto-Save (`sessionAutoSave.ts`)**: Continuous auto-save with live status pill (`✓ Auto-saved`), automatic derivation of smart session titles, and session history manager.
+- **Multi-Format Export**: Export entire lessons to multi-page **PDF** or high-resolution **PNG**.
+
+### 📊 6. Deterministic Diagram Engine 2.0 & Canvas Typography
+- **`DiagramLayoutEngine 2.0`**:
+  - Deterministic auto-layout for concept maps, taxonomy trees, hierarchical flowcharts, and comparison boards.
+  - **Multi-Directional Flow**: Step nodes support `flow: 'right'`, `'down'`, `'left'`, and ascending `'up'` (enabling return loops and upward cycles).
+  - **Continuous Append Mode**: Seamlessly attaches new step sequences to existing whiteboard nodes (`attachToNode`) with localized collision-free slot allocation.
+  - 90° orthogonal elbow connectors eliminating crossing diagonal lines.
+- **Canvas Markdown Typography (`RoughJsAdapter.ts`)**:
+  - Tokenized parsing of bold (`**text**`), italic/notes (`*text*`), subheaders with colons, and bullet normalization.
+  - Zero raw formatting delimiters (`**`, `*`) leaking onto the canvas.
+- **Sequential 2-Column Layout with Widow Heading Prevention (`CollisionDetector.ts`)**:
+  - Strict two-column gravity flow (Column 1 = 150px, Column 2 = 1000px).
+  - Contextual lookahead buffer preventing single-line headings from being orphaned at the bottom of a column.
+
+### 📐 7. Smart 3D WebGL Mathematical Geometry Engine
 - **Marching Cubes Volumetric Meshing**: Real-time rendering of implicit quadric surfaces and CSG intersections (e.g. $9 \le x^2 + y^2 + z^2 \le 16$, Steinmetz solids, ellipsoids, hyperboloids).
 - **Feature-Preserving Meshing**: Exact sub-voxel zero-crossing root finding and QEF singularity resolution to eliminate floating artifacts and ghost blobs.
 - **Parametric Manifolds**: Vector manifold builders for Möbius strips, Toruses, Trefoil knots, and Klein bottles.
@@ -119,38 +166,9 @@ python main.py
 - **Watertight Clipping Planes**: Real-time cross-section slicing ($x \ge 0, z \le 2$).
 - **Isolated 3D OrbitControls**: Pan, rotate, and zoom 3D graphs directly inside their whiteboard cards without disrupting canvas navigation.
 
-### 📊 4. Deterministic Diagram & Venn Engines
-- **`DiagramLayoutEngine`**:
-  - Deterministic auto-layout for concept maps, taxonomy trees, hierarchical flowcharts, and comparison boards.
-  - Dynamic font measurement and auto-sizing node boxes to eliminate text overflow.
-  - 90° orthogonal elbow connectors and mid-diagram directional turns (`down`, `right`, `left`).
-  - Compound diagram composition with `attachToNode`.
-- **`VennOverlay`**:
-  - High-precision 2-set and 3-set Venn diagrams rendered with native SVG Boolean masking (`<clipPath>`, `<mask>`).
-  - Exact shading for any boolean set operation ($P(A \cap B)$, $P(A \cup B)$, $P(A \setminus B)$, $P(A')$, neither, etc.).
-  - Set labels and probability minterms positioned at calculated geometric centroids.
-
-### 📈 5. Calculus 2D Graphing with Area Shading
-- Interactive Cartesian coordinate system with auto-scaling bounds.
-- Function graphing for polynomials, trigonometric, exponential, and rational curves.
-- **Definite Integral Area Shading**: Highlights integration regions between $f_{\text{top}}(x)$ and $f_{\text{bottom}}(x)$ over $[a, b]$ with area evaluation.
-- **Statistical Distributions**: Normal / Gaussian probability density curves with shaded tails and confidence intervals.
-
-### 📝 6. Synchronized Digital Blackboard & Slide Deck
-- **KaTeX LaTeX Typesetting**: Renders math expressions, integrals, matrices, fractions, and boxed answers.
-- **Simulated Handwriting**: Stroke-by-stroke handwriting animation synchronized with vocal speech.
-- **Writing Style Selector**: Seamlessly switch between Handwriting (`Caveat`), Normal Typography (`Inter`), or Mixed Mode.
-- **PowerPoint-Style Slide Deck**: Create, rename, duplicate, reorder, and clear slides; inspect whiteboard history with `inspect_whiteboard`.
-- **Session Export**: Export the entire lesson to multi-page **PDF** or high-resolution **PNG**.
-- **User Drawing Tools**: Integrated student pen, highlighter, text, and eraser layer.
-
-### 🌐 7. Multilingual Matrix (5 Pedagogical Modes)
-Specialized for bilingual language schools (IGCSE / American / STEM / Abitur / Thanaweya Amma):
-1. **Egyptian Arabic + German Context**: Egyptian Arabic syntax with 100% German for technical terminology and academic concepts.
-2. **Egyptian Arabic + English Context**: Egyptian Arabic syntax with 100% English for all mathematics, science, equations, and operational verbs.
-3. **English Only**: Pure international English instruction.
-4. **German + English Context**: English conversational syntax with German technical terms.
-5. **German Only**: Pure German immersion.
+### 📈 8. Calculus 2D Graphing with Area Shading & Vector Venn Diagrams
+- **2D Calculus Engine**: Interactive Cartesian coordinate system with auto-scaling bounds, definite integral area shading between $f_{\text{top}}(x)$ and $f_{\text{bottom}}(x)$ over $[a, b]$, and Gaussian probability density curves.
+- **Vector Venn Diagrams**: High-precision 2-set and 3-set Venn diagrams rendered with native SVG Boolean masking (`<clipPath>`, `<mask />`) and exact geometric centroid label placement.
 
 ---
 
@@ -160,31 +178,42 @@ Specialized for bilingual language schools (IGCSE / American / STEM / Abitur / T
 AI_Tutor/
 ├── agent/                          # Python AI Tutor Voice Agent & Worker
 │   ├── agent.py                    # TutorAgent class, tools & Gemini Live integration
+│   ├── config_store.py             # Persistent configuration store (agent_config.json)
 │   ├── requirements.txt            # Python dependencies (livekit-agents, google-genai, etc.)
 │   └── venv/                       # (Git-ignored) Virtual environment
 ├── livekit_server/                 # Pre-compiled LiveKit WebRTC Server
 │   ├── livekit-server.exe          # Local development binary
 │   └── LICENSE                     # Apache 2.0 License
-├── public/                         # Public assets (icons, favicons)
+├── public/                         # Public assets & PWA manifest
+│   ├── manifest.webmanifest        # Progressive Web App manifest
+│   └── favicon.ico                 # App icon
+├── scripts/                        # Automation & deployment scripts
+│   ├── create-desktop-shortcut.ps1 # Windows desktop shortcut generator
+│   └── run.bat                     # Quick launch batch script
 ├── src/                            # Frontend React 18 + TypeScript Application
 │   ├── adapters/                   # Architectural abstraction layers
-│   │   ├── canvas/                 # Rough.js & 2D canvas drawing adapters
+│   │   ├── canvas/                 # RoughJsAdapter (2D canvas & markdown typography)
 │   │   ├── llm/                    # Gemini adapter interfaces
 │   │   └── tts/                    # ElevenLabs & TTS preview adapters
 │   ├── components/                 # React UI components
+│   │   ├── ApiKeyModal.tsx         # In-App Gemini API Key onboarding gate & vault
 │   │   ├── ChatDrawer.tsx          # Real-time chat & multimodal file uploader
-│   │   ├── FileMenu.tsx            # Save/Open, PDF/PNG export menu
+│   │   ├── FileMenu.tsx            # Save/Open, PDF/PNG export, recent sessions & auto-save
 │   │   ├── FloatingVideoPiP.tsx    # Picture-in-Picture webcam & screen video
+│   │   ├── LanguageSelectorModal.tsx# Multilingual hierarchy & stability benchmark modal
 │   │   ├── ModelSelectorModal.tsx  # Dynamic Gemini Live model & thinking level modal
-│   │   ├── SlidePanel.tsx          # Slide deck drawer & thumbnail management
+│   │   ├── PersonaSelectorModal.tsx# Verbosity, vocal tone & learner profile modal
+│   │   ├── SlidePanel.tsx          # PowerPoint-style slide sorter drawer
+│   │   ├── SlideThumbnail.tsx      # Live 16:9 miniature canvas thumbnail renderer
 │   │   ├── ThreeGraph3DCard.tsx    # 3D Three.js card with isolated OrbitControls
 │   │   ├── UserDrawingLayer.tsx    # Student freehand annotation canvas
 │   │   ├── VoiceSelectorModal.tsx  # 30-voice persona audition & selector modal
 │   │   └── Whiteboard.tsx          # Master blackboard workspace orchestrator
 │   ├── engine/                     # Core computational & synchronization engines
 │   │   ├── AudioClock.ts           # Web Audio clock source & drift calculator
-│   │   ├── CollisionDetector.ts    # Two-column layout solver & collision avoidance
-│   │   ├── DiagramLayoutEngine.ts  # Deterministic tree, flowchart & comparison auto-layout
+│   │   ├── CameraFollowController.ts# Autonomous blackboard camera tracking controller
+│   │   ├── CollisionDetector.ts    # 2-column layout solver & lookahead spacing
+│   │   ├── DiagramLayoutEngine.ts  # Deterministic multi-directional diagram auto-layout
 │   │   ├── DriftCorrector.ts       # Audio-visual synchronization drift compensator
 │   │   ├── InterruptionHandler.ts  # Millisecond vocal interruption recovery
 │   │   ├── SyncEngine.ts           # Master render dispatcher & undo/redo stack
@@ -195,6 +224,7 @@ AI_Tutor/
 │   │   ├── Graph3DOverlay.tsx      # 3D WebGL container overlay
 │   │   ├── GraphOverlay.tsx        # 2D coordinate graphs & calculus area shading
 │   │   ├── MathOverlay.tsx         # KaTeX LaTeX formula renderer
+│   │   ├── SlideMediaOverlay.tsx   # In-slide interactive HTML5 video & image player
 │   │   ├── SVGOverlay.tsx          # Stroke-by-stroke animated handwriting
 │   │   └── VennOverlay.tsx         # Vector SVG boolean mask Venn diagram engine
 │   ├── math3d/                     # Mathematical 3D geometry engine
@@ -206,28 +236,38 @@ AI_Tutor/
 │   │   ├── implicitResolver.ts     # Implicit-to-explicit equation resolver
 │   │   ├── multiBoundarySolver.ts  # Multi-constraint spatial domain solver
 │   │   └── router.ts               # 3D plot type routing logic
+│   ├── server/                     # Full-stack local backend services
+│   │   └── zyrenBackendVault.ts    # Secure AppData vault, API key manager & disk session storage
+│   ├── services/                   # Client application services
+│   │   └── sessionAutoSave.ts      # Dual IndexedDB + disk continuous auto-save
 │   ├── store/                      # Zustand state store
 │   ├── transport/                  # LiveKit WebRTC client & DataChannel protocol
 │   ├── types/                      # Shared TypeScript type definitions
 │   ├── App.tsx                     # Top-level React entrypoint & token lifecycle
 │   ├── index.css                   # Global blackboard styling & Tailwind classes
 │   └── main.tsx                    # React DOM root
-├── tests/                          # Automated test suites
-│   ├── agent/                      # Pytest agent & MLF instruction tests
-│   │   ├── test_agent.py           # Agent async tool execution test
-│   │   └── test_mlf_instructions.py# Multilingual matrix prompt validation
-│   └── unit/                       # Vitest frontend unit tests
-│       ├── diagram_layout.test.ts  # DiagramLayoutEngine unit test suite (22 tests)
+├── tests/                          # Automated test suites (101 passing tests)
+│   ├── agent/                      # Pytest backend agent tests (24 tests)
+│   │   ├── test_agent.py           # Agent async tool execution
+│   │   ├── test_config_store.py    # Persistent JSON configuration store
+│   │   ├── test_language_config.py # Multilingual hierarchy & accessibility rescue
+│   │   ├── test_media_and_extended_thinking.py # Slide media perception & thinking locks
+│   │   ├── test_mlf_instructions.py# Multilingual matrix prompt validation
+│   │   └── test_problem7_fixes.py  # Upward diagram flow & speech-action synchronization
+│   └── unit/                       # Vitest frontend unit tests (77 tests)
+│       ├── diagram_layout.test.ts  # Multi-directional diagrams & append layout (29 tests)
 │       ├── graph_shading.test.ts   # 2D calculus area shading test suite (5 tests)
-│       └── venn_diagram.test.ts    # VennOverlay boolean masking test suite (14 tests)
+│       ├── new_features.test.ts    # Slide thumbnails, auto-save & media hooks (9 tests)
+│       ├── expressionGuard.test.ts # AST math expression safety & validation (12 tests)
+│       ├── venn_diagram.test.ts    # VennOverlay boolean masking test suite (14 tests)
+│       └── whiteboard_session.test.ts # Session state & serialization test suite (8 tests)
 ├── .env.example                    # Environment configuration template
 ├── .gitignore                      # Git exclusion rules
 ├── index.html                      # HTML template
 ├── main.py                         # Unified platform launcher script
 ├── package.json                    # Node dependencies & npm scripts
-├── run.bat                         # Quick launch batch script for Windows
 ├── tsconfig.json                   # TypeScript project configuration
-└── vite.config.ts                  # Vite build & LiveKit token server config
+└── vite.config.ts                  # Vite build, API middleware & LiveKit token server config
 ```
 
 ---
@@ -253,7 +293,7 @@ Copy the template `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Open `.env` in any text editor and insert your Gemini API Key:
+Open `.env` in any text editor and insert your Gemini API Key (or configure it directly inside the app via the In-App Key Vault):
 ```ini
 LIVEKIT_URL=ws://127.0.0.1:7880
 LIVEKIT_API_KEY=devkey
@@ -293,13 +333,13 @@ Start all services (LiveKit Server + Python Voice Agent + Vite Frontend) with a 
 ```bash
 python main.py
 ```
-*Windows users can also double-click `scripts/run.bat`.*
+*Windows users can also double-click `scripts/create-desktop-shortcut.ps1` to place a standalone native desktop app icon on their desktop.*
 
-The launcher will initialize all three components, start the LiveKit RTC server, establish connection channels, and automatically launch your browser to:
+The launcher initializes all components, verifies LiveKit health, connects the Gemini Realtime session, and opens the application window:
 ```
 http://localhost:5173
 ```
-If you wish to run on a tablet or mobile phone on the same Wi-Fi network, access the LAN URL printed in the console (e.g., `http://192.168.1.X:5173`).
+To run on a tablet, iPad, or mobile phone on the same Wi-Fi network, access the LAN URL printed in the console (e.g., `http://192.168.1.X:5173`).
 
 ---
 
@@ -310,143 +350,55 @@ If you wish to run on a tablet or mobile phone on the same Wi-Fi network, access
 | `LIVEKIT_URL` | `ws://127.0.0.1:7880` | WebSocket URL of the LiveKit WebRTC server (`wss://...` for LiveKit Cloud). |
 | `LIVEKIT_API_KEY` | `devkey` | LiveKit API Key (`devkey` for local development). |
 | `LIVEKIT_API_SECRET` | `secret` | LiveKit API Secret (`secret` for local development). |
-| `GEMINI_API_KEY` | *(Required)* | Google Gemini API Key from [Google AI Studio](https://aistudio.google.com/). |
-
----
-
-## 🧮 3D Mathematical Geometry Engine
-
-The AI Tutor digital blackboard includes a high-performance **3D WebGL geometry engine** built on top of Three.js and custom mathematical algorithms:
-
-```
-                          ┌──────────────────────────┐
-                          │   Natural Language /     │
-                          │   Algebraic Equation     │
-                          └─────────────┬────────────┘
-                                        │
-                                        ▼
-                          ┌──────────────────────────┐
-                          │    AST Math Compiler     │
-                          │ (expressionGuard.ts)     │
-                          └─────────────┬────────────┘
-                                        │
-        ┌───────────────────────────────┼───────────────────────────────┐
-        ▼                               ▼                               ▼
-┌───────────────┐              ┌────────────────┐              ┌────────────────┐
-│ Marching      │              │ Parametric     │              │ Solids of      │
-│ Cubes Engine  │              │ Manifold       │              │ Revolution     │
-│ (Implicit     │              │ (Torus, Möbius,│              │ & Extrusions   │
-│ Solids & CSG) │              │ Vector Fields) │              │ (Watertight)   │
-└───────┬───────┘              └────────┬───────┘              └────────┬───────┘
-        │                               │                               │
-        └───────────────────────────────┼───────────────────────────────┘
-                                        │
-                                        ▼
-                          ┌──────────────────────────┐
-                          │ ThreeGraph3DCard (WebGL) │
-                          │  - Isolated OrbitControls│
-                          │  - Watertight Clipping   │
-                          │  - Adaptive Grid Jitter  │
-                          └──────────────────────────┘
-```
-
-### Supported 3D Plot Types
-1. **Implicit Solids & CSG Intersections** (`plot_type='bounded_surfaces'`):
-   - Marching Cubes algorithm across a $64^3$ voxel grid.
-   - Exact sub-voxel zero-crossing root finding and QEF singularity resolution.
-   - Evaluates complex inequalities like $9 \le x^2 + y^2 + z^2 \le 16$, intersecting cylinders, and Cayley cubics.
-2. **Parametric Manifolds** (`plot_type='parametric'`):
-   - Computes parametric vector equations $r(u, v) = \langle x(u,v), y(u,v), z(u,v) \rangle$.
-3. **Solids of Revolution** (`plot_type='solid_of_revolution'`):
-   - Revolve 2D curves $y = f(x)$ around $X, Y,$ or $Z$ axes with custom angles and watertight end caps.
-4. **Linear Extrusions** (`plot_type='linear_extrusion'`):
-   - Extrude bounded 2D planar domains between $f_{\text{top}}$ and $f_{\text{bottom}}$ into 3D space.
-5. **Single-Valued Heightfields** (`plot_type='surface'`):
-   - Direct graph of $z = f(x, y)$ with optional 2D domain masks.
-
----
-
-## 📡 Data Channel Protocol
-
-The client and agent communicate bidirectionally using reliable WebRTC JSON packets:
-
-### Client → Agent
-```json
-{
-  "type": "board_state_sync",
-  "payload": {
-    "sessionTitle": "Calculus - Volume of Revolution",
-    "totalSlides": 2,
-    "activePageIndex": 0,
-    "currentSlide": {
-      "title": "Disk Method",
-      "mathEquations": ["V = \\pi \\int_0^2 (4 - x^2)^2 dx"],
-      "graphs2D": [],
-      "graphs3D": [{ "title": "Paraboloid of Revolution" }]
-    }
-  }
-}
-```
-*Also supports: `change_voice`, `change_model`, `reset_ai_memory`, `user_prompt`, and `file_upload`.*
-
-### Agent → Client (Tool Commands)
-```json
-{
-  "type": "shape",
-  "shapeType": "graph3d",
-  "x": 1000,
-  "y": 180,
-  "width": 640,
-  "height": 480,
-  "options": {
-    "title": "Spherical Shell Cutaway",
-    "plotType": "bounded_surfaces",
-    "equationZ": "9 <= x^2 + y^2 + z^2 <= 16",
-    "clippingPlane": "x >= 0",
-    "colorTheme": "cyan_orange"
-  }
-}
-```
+| `GEMINI_API_KEY` | *(Configurable in UI or .env)* | Google Gemini API Key from [Google AI Studio](https://aistudio.google.com/). |
+| `ZYREN_APPDATA_DIR` | *(OS AppData default)* | Custom directory for session snapshots, media files, and settings. |
 
 ---
 
 ## 🧪 Testing & Quality Assurance
 
-AI Tutor enforces strict quality assurance with automated test suites across both frontend and backend layers:
+AI Tutor enforces strict quality assurance with **101 automated passing tests** across both frontend and backend layers:
 
-### 1. Frontend Test Suite (Vitest)
-Executes 53 unit tests validating the deterministic layout solver, SVG Venn masks, 2D calculus area shading, and AST math expression safety:
+### 1. Frontend Test Suite (Vitest — 77 Tests)
+Executes 77 unit tests validating multi-directional diagram layouts, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
 ```bash
 npm test
 ```
 ```
- ✓ tests/unit/diagram_layout.test.ts (22 tests)
+ ✓ tests/unit/diagram_layout.test.ts (29 tests)
  ✓ tests/unit/venn_diagram.test.ts (14 tests)
+ ✓ tests/unit/expressionGuard.test.ts (12 tests)
+ ✓ tests/unit/new_features.test.ts (9 tests)
+ ✓ tests/unit/whiteboard_session.test.ts (8 tests)
  ✓ tests/unit/graph_shading.test.ts (5 tests)
- ✓ src/math3d/expressionGuard.test.ts (12 tests)
 
- Test Files  4 passed (4)
-      Tests  53 passed (53)
+ Test Files  6 passed (6)
+      Tests  77 passed (77)
 ```
 
-### 2. Frontend Production Build Check
-```bash
-npm run build
-```
-Validates full TypeScript typing (`tsc -b`) and bundles production assets via Vite.
-
-### 3. Backend Agent Test Suite (Pytest)
-Validates asynchronous tool calls and prompt multilingual matrix integrity:
+### 2. Backend Agent Test Suite (Pytest — 24 Tests)
+Validates asynchronous tool calls, persistent JSON config stores, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
 ```bash
 # In active Python virtual environment:
 pytest tests/agent/
 ```
 ```
-collected 2 items
-tests/agent/test_agent.py .           [ 50%]
-tests/agent/test_mlf_instructions.py . [100%]
-===================== 2 passed in 9.72s =====================
+collected 24 items
+tests/agent/test_agent.py .                                              [  4%]
+tests/agent/test_config_store.py ..                                      [ 12%]
+tests/agent/test_language_config.py .........                            [ 50%]
+tests/agent/test_media_and_extended_thinking.py ....                     [ 66%]
+tests/agent/test_mlf_instructions.py .                                   [ 70%]
+tests/agent/test_problem7_fixes.py .......                               [100%]
+
+============================= 24 passed in 5.56s =============================
 ```
+
+### 3. Frontend Production Build Check
+```bash
+npm run build
+```
+Validates full TypeScript typing (`tsc -b`) and bundles production assets via Vite with zero errors.
 
 ---
 
