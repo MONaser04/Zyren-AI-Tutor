@@ -618,6 +618,34 @@ describe('DiagramLayoutEngine — Deterministic Diagram & Layout Solver', () => 
       const arrowToR3 = arrows.find((a) => Math.abs(a.toX - r3.x) < 15);
       expect(arrowToR3).toBeDefined();
     });
+
+    it('supports upward flow direction ("up") for loops and upward progressions', () => {
+      const upOptions = {
+        title: 'Pipeline Flowing Upwards',
+        diagramType: 'flowchart' as const,
+        direction: 'TB' as const,
+        nodes: [
+          { label: 'Step 1: Base', flow: 'up' as const },
+          { label: 'Step 2: Ascending', flow: 'up' as const },
+        ],
+      };
+
+      const shapes = DiagramLayoutEngine.generateShapes(upOptions);
+      const rectangles = shapes.filter((s) => s.shapeType === 'rectangle');
+      expect(rectangles.length).toBe(2);
+
+      const r1 = rectangles[0];
+      const r2 = rectangles[1];
+
+      // Step 2 is vertically ABOVE Step 1
+      expect(r2.y).toBeLessThan(r1.y);
+
+      // Connectors include an upward arrow from r1 to r2
+      const arrows = shapes.filter((s) => s.shapeType === 'arrow');
+      expect(arrows.length).toBeGreaterThan(0);
+      const upwardArrow = arrows.find((a) => a.y > a.toY);
+      expect(upwardArrow).toBeDefined();
+    });
   });
 
   describe('Problem 3: Connecting Flowcharts to Concept Trees (Hybrid & Inter-Diagram)', () => {
@@ -702,7 +730,243 @@ describe('DiagramLayoutEngine — Deterministic Diagram & Layout Solver', () => 
       );
       expect(bridgeArrow).toBeDefined();
     });
+
+    it('prevents collision when concept card is placed at explicit (x: 150, y: 180) overlapping existing text', () => {
+      const existingText: any = {
+        kind: 'shape',
+        shapeType: 'text',
+        x: 150,
+        y: 180,
+        width: 700,
+        height: 70,
+        options: {
+          text: 'Machine Learning is a field of AI where computers learn from data and improve without being explicitly programmed.',
+          fontSize: 24,
+        },
+      };
+
+      const cardShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'concept_card',
+        title: 'Spam Filtering',
+        items: ['Input: Emails', 'Process: Analyze patterns', 'Output: Filter spam'],
+        x: 150,
+        y: 180,
+        width: 600,
+        existingShapes: [existingText],
+      });
+
+      const container = cardShapes.find((s) => s.shapeType === 'rectangle');
+      expect(container).toBeDefined();
+
+      const containerBox = {
+        minX: container!.x,
+        maxX: container!.x + (container!.width ?? 600),
+        minY: container!.y,
+        maxY: container!.y + (container!.height ?? 180),
+      };
+
+      const textBox = {
+        minX: existingText.x,
+        maxX: existingText.x + existingText.width,
+        minY: existingText.y,
+        maxY: existingText.y + existingText.height,
+      };
+
+      const overlaps =
+        containerBox.minX < textBox.maxX - 5 &&
+        containerBox.maxX > textBox.minX + 5 &&
+        containerBox.minY < textBox.maxY - 5 &&
+        containerBox.maxY > textBox.minY + 5;
+
+      expect(overlaps).toBe(false);
+      expect(container!.y).toBeGreaterThanOrEqual(textBox.maxY + 30);
+    });
+  });
+  describe('Dynamic Flex-Track & True AABB Obstacle Layout (Image 1 & 2 Fixes)', () => {
+    it('Scenario 1: Sequential text stays in Column 1 (x: 150) under header even when a diagram exists on the right', () => {
+      const headerTitle: any = {
+        kind: 'shape',
+        shapeType: 'text',
+        x: 150,
+        y: 70,
+        style: 'title',
+        width: 400,
+        height: 45,
+        options: { text: 'Artificial Intelligence & Machine Learning' },
+      };
+
+      const rightDiagramRoot: any = {
+        kind: 'shape',
+        shapeType: 'rectangle',
+        x: 1000,
+        y: 180,
+        width: 250,
+        height: 60,
+        options: { label: 'Core Concepts' },
+      };
+
+      const rightDiagramText: any = {
+        kind: 'shape',
+        shapeType: 'text',
+        x: 1050,
+        y: 280,
+        width: 180,
+        height: 35,
+        options: { text: '• Subset of AI' },
+      };
+
+      const existingShapes = [headerTitle, rightDiagramRoot, rightDiagramText];
+
+      const freePos = CollisionDetector.findFreePosition(
+        { x: 150, y: 180 },
+        { width: 550, height: 160 },
+        existingShapes,
+        false,
+        'text'
+      );
+
+      // Must remain in Column 1 (COL1_X = 150), NOT banished to Column 2 (x: 1000)
+      expect(freePos.x).toBe(CollisionDetector.COL1_X);
+      // Must start cleanly below header (140-180), NOT pushed to bottom
+      expect(freePos.y).toBeGreaterThanOrEqual(140);
+      expect(freePos.y).toBeLessThanOrEqual(200);
+    });
+
+    it('Scenario 2: Sequential text in Column 1 is NOT pushed down by a center diagram that does not overlap horizontally', () => {
+      const headerTitle: any = {
+        kind: 'shape',
+        shapeType: 'text',
+        x: 150,
+        y: 70,
+        style: 'title',
+        width: 350,
+        height: 45,
+        options: { text: 'Main Types of Machine Learning' },
+      };
+
+      const centerDiagramBox: any = {
+        kind: 'shape',
+        shapeType: 'rectangle',
+        x: 820,
+        y: 180,
+        width: 240,
+        height: 60,
+        options: { label: 'Learning Approaches' },
+      };
+
+      const centerDiagramChild: any = {
+        kind: 'shape',
+        shapeType: 'rectangle',
+        x: 820,
+        y: 350,
+        width: 240,
+        height: 60,
+        options: { label: 'Machine Learning' },
+      };
+
+      const existingShapes = [headerTitle, centerDiagramBox, centerDiagramChild];
+
+      const freePos = CollisionDetector.findFreePosition(
+        { x: 150, y: 180 },
+        { width: 520, height: 180 },
+        existingShapes,
+        false,
+        'text'
+      );
+
+      // Must remain in Column 1 (COL1_X = 150)
+      expect(freePos.x).toBe(CollisionDetector.COL1_X);
+      // Must start at safeTopY (<= 200), NOT pushed down to y=440+ below the center diagram
+      expect(freePos.y).toBeLessThanOrEqual(200);
+    });
+
+    it('Scenario 3: Concept card renders bullet items when options.items is passed without child nodes', () => {
+      const cardShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'concept_card',
+        title: 'Real-World Examples',
+        items: [
+          'Supervised: Email Spam Detection, Medical Diagnosis',
+          'Unsupervised: Customer Segmentation, Anomalies in Network Traffic',
+          'Reinforcement: Robot Maze Navigation, Strategy Games',
+        ],
+      });
+
+      const rootRect = cardShapes.find((s) => s.shapeType === 'rectangle');
+      expect(rootRect).toBeDefined();
+
+      const bulletTexts = cardShapes.filter((s) => s.shapeType === 'text');
+      expect(bulletTexts.length).toBe(3);
+      expect(bulletTexts[0].options?.text).toContain('Supervised:');
+      expect(bulletTexts[1].options?.text).toContain('Unsupervised:');
+      expect(bulletTexts[2].options?.text).toContain('Reinforcement:');
+    });
+
+    it('Scenario 4: Multi-line wrapped items dynamically adjust spacing so lines never overlap', () => {
+      const comparisonShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'comparison',
+        title: 'Machine Learning Types Comparison',
+        nodes: [
+          {
+            label: 'Supervised Learning',
+            items: [
+              'Lernen mit Labeled Data (Inputs & bekannte Outputs und weitere lange Erklaerungen).',
+              'Beispiel: Spam-Filter.',
+            ],
+          },
+        ],
+      });
+
+      const textShapes = comparisonShapes.filter((s) => s.shapeType === 'text');
+      expect(textShapes.length).toBe(2);
+
+      const firstItem = textShapes[0];
+      const secondItem = textShapes[1];
+
+      // Because the first item is 80+ chars, it wraps to multiple lines.
+      // The second item must be shifted down significantly (> 50px) rather than the old fixed 34px!
+      const verticalGap = secondItem.y - firstItem.y;
+      expect(verticalGap).toBeGreaterThanOrEqual(55);
+    });
+
+    it('Scenario 5: Erasing a diagram by title removes ALL shapes in that diagram group cleanly', () => {
+      const mockCanvasAdapter = {
+        clear: vi.fn(),
+        drawRectangle: vi.fn(),
+        drawEllipse: vi.fn(),
+        drawLine: vi.fn(),
+        drawArrow: vi.fn(),
+        drawText: vi.fn(),
+      } as any;
+      const mockSvgOverlay = {
+        clear: vi.fn(),
+        render: vi.fn(),
+      } as any;
+
+      const engine = new SyncEngine({
+        canvasAdapter: mockCanvasAdapter,
+        svgOverlay: mockSvgOverlay,
+        getWritingStyle: () => 'normal',
+      });
+
+      const comparisonShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'comparison',
+        title: 'Vergleich der Machine Learning Arten',
+        nodes: [
+          { label: 'Supervised Learning', items: ['Item 1', 'Item 2'] },
+          { label: 'Unsupervised Learning', items: ['Item 3'] },
+          { label: 'Reinforcement Learning', items: ['Item 4'] },
+        ],
+      });
+
+      expect(comparisonShapes.length).toBeGreaterThan(3);
+      engine.loadBoard(comparisonShapes, []);
+      expect(engine.getDrawnShapes().length).toBe(comparisonShapes.length);
+
+      // Erase by exact or partial diagram title
+      const erased = engine.erase('Vergleich der Machine Learning Arten');
+      expect(erased).toBe(true);
+      // All shapes belonging to the comparison board must be removed!
+      expect(engine.getDrawnShapes().length).toBe(0);
+    });
   });
 });
-
-

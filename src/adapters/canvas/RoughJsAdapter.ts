@@ -15,6 +15,37 @@ import type { RoughCanvas } from 'roughjs/bin/canvas';
 import { v4 as uuidv4 } from 'uuid';
 import type { ICanvasAdapter } from './ICanvasAdapter';
 import type { Point, ShapeHandle, ShapeOptions, ArrowOptions, TextOptions } from '../../types';
+import { splitIntoLogicalLines, normalizeProseMathAndSymbols } from '../../engine/CollisionDetector';
+
+const SUPERSCRIPT_CHAR_MAP: Record<string, string> = {
+  '0': '⁰',
+  '1': '¹',
+  '2': '²',
+  '3': '³',
+  '4': '⁴',
+  '5': '⁵',
+  '6': '⁶',
+  '7': '⁷',
+  '8': '⁸',
+  '9': '⁹',
+  '+': '⁺',
+  '-': '⁻',
+  'n': 'ⁿ',
+  'i': 'ⁱ',
+};
+
+function formatCanvasInlineExponents(str: string): string {
+  const convertExp = (exp: string): string => {
+    const chars = [...exp];
+    if (chars.every((c) => SUPERSCRIPT_CHAR_MAP[c] !== undefined)) {
+      return chars.map((c) => SUPERSCRIPT_CHAR_MAP[c]).join('');
+    }
+    return `^(${exp})`;
+  };
+  return str
+    .replace(/\^\{([^}]+)\}/g, (_, exp) => convertExp(exp))
+    .replace(/\^([0-9n+\-]{1,3})/g, (_, exp) => convertExp(exp));
+}
 
 interface StoredShape {
   handle: ShapeHandle;
@@ -198,25 +229,43 @@ export class RoughJsAdapter implements ICanvasAdapter {
       // Determine smart maximum wrapping width based on coordinate x and whiteboard limits
       // Canvas width is 1920, right safe margin is 60px (1860px max x).
       const availableWidth = Math.max(300, 1860 - x);
-      const maxWidth = opts?.maxWidth ?? (isMainTitle ? availableWidth : Math.min(850, availableWidth));
+      const maxWidth = opts?.maxWidth ?? (isMainTitle ? availableWidth : Math.min(760, availableWidth));
+      const elasticTailAllowance = 135;
 
-      // Multi-line word wrapping algorithm
+      // Multi-line word wrapping algorithm with logical list splitting and elastic orphan-tail lookahead
       const lines: string[] = [];
-      const paragraphs = (text || '').split('\n');
+      const paragraphs = splitIntoLogicalLines(text || '');
 
-      for (const paragraph of paragraphs) {
+      for (const rawParagraph of paragraphs) {
+        const paragraph = formatCanvasInlineExponents(normalizeProseMathAndSymbols(rawParagraph));
         if (!paragraph.trim()) {
-          lines.push('');
           continue;
         }
-        const words = paragraph.split(' ');
+        const words = paragraph.split(/\s+/);
         let currentLine = '';
-        for (const word of words) {
+        for (let wIdx = 0; wIdx < words.length; wIdx++) {
+          const word = words[wIdx];
           const testLine = currentLine ? `${currentLine} ${word}` : word;
           const testWidth = this.ctx.measureText(testLine).width;
+
           if (testWidth > maxWidth && currentLine) {
-            lines.push(currentLine);
-            currentLine = word;
+            const remainingWordsCount = words.length - wIdx;
+            const remainingTailText = words.slice(wIdx).join(' ');
+            const fullRemainingLineWidth = this.ctx.measureText(`${currentLine} ${remainingTailText}`).width;
+            const prevWord = wIdx > 0 ? words[wIdx - 1] : '';
+            const isShortEquationTail =
+              word === '=' ||
+              word.startsWith('=') ||
+              prevWord === '=' ||
+              (remainingWordsCount <= 3 && fullRemainingLineWidth <= maxWidth + elasticTailAllowance);
+
+            if (isShortEquationTail && fullRemainingLineWidth <= availableWidth) {
+              currentLine = `${currentLine} ${remainingTailText}`;
+              break;
+            } else {
+              lines.push(currentLine);
+              currentLine = word;
+            }
           } else {
             currentLine = testLine;
           }
@@ -271,15 +320,66 @@ export class RoughJsAdapter implements ICanvasAdapter {
           this.ctx.fillText(line, x + 6, y + idx * lineHeight);
         });
       } else {
-        this.ctx.fillStyle = color;
+        const defaultFont = `${fontWeight} ${fontSize}px ${fontFamily}`;
+        const boldFont = `700 ${fontSize}px ${fontFamily}`;
+        const italicFont = `italic ${fontWeight} ${fontSize}px ${fontFamily}`;
+
         lines.forEach((line, idx) => {
-          this.ctx.fillText(line, x, y + idx * lineHeight);
+          const lineY = y + idx * lineHeight;
+          let rawLine = line.trim();
+          if (!rawLine) return;
+
+          // Normalize bullet characters at start of line
+          let bulletPrefix = '';
+          const bulletMatch = rawLine.match(/^([-*•])\s+/);
+          if (bulletMatch) {
+            bulletPrefix = '• ';
+            rawLine = rawLine.slice(bulletMatch[0].length);
+          }
+
+          // Check if line starts with a lead subheading ending in a colon (e.g. "Processing Tasks:", "- Outliers:", "**Metrics:**")
+          const subHeaderMatch = rawLine.match(/^(\*\*[^*]+:\*\*|[A-Za-z0-9\s()\/\-–—]+:)\s*(.*)$/);
+          if (subHeaderMatch) {
+            const rawHeader = subHeaderMatch[1];
+            const rest = subHeaderMatch[2];
+            const cleanHeader = rawHeader.replace(/[*_]/g, '');
+
+            let curX = x;
+            if (bulletPrefix) {
+              this.ctx.font = defaultFont;
+              this.ctx.fillStyle = color;
+              this.ctx.fillText(bulletPrefix, curX, lineY);
+              curX += this.ctx.measureText(bulletPrefix).width;
+            }
+
+            // Draw Subheading in Bold with clean high-contrast styling
+            this.ctx.font = boldFont;
+            this.ctx.fillStyle = isHandwritten ? '#4ECDC4' : '#F8FAFC';
+            this.ctx.fillText(cleanHeader, curX, lineY);
+            curX += this.ctx.measureText(cleanHeader).width;
+
+            // Draw trailing prose in formatted segments
+            if (rest) {
+              curX += this.ctx.measureText(' ').width;
+              this.renderFormattedTextSegments(rest, curX, lineY, defaultFont, boldFont, italicFont, color);
+            }
+          } else {
+            let curX = x;
+            if (bulletPrefix) {
+              this.ctx.font = defaultFont;
+              this.ctx.fillStyle = color;
+              this.ctx.fillText(bulletPrefix, curX, lineY);
+              curX += this.ctx.measureText(bulletPrefix).width;
+            }
+            this.renderFormattedTextSegments(rawLine, curX, lineY, defaultFont, boldFont, italicFont, color);
+          }
         });
       }
 
-      // ── Main Topic Title Glowing Accent Underline ──
-      if (isMainTitle) {
-        const lineWidth = Math.max(200, maxLineWidth + 20);
+      // ── Main Topic Title & Decorated Sub-header Glowing Accent Underline ──
+      const isDecorated = isMainTitle || opts?.style === 'title' || opts?.style === 'subtitle' || Boolean((opts as any)?.underline);
+      if (isDecorated) {
+        const lineWidth = Math.max(160, maxLineWidth + 16);
         this.rc.line(x, y + totalHeight + 4, x + lineWidth, y + totalHeight + 4, {
           stroke: '#4ECDC4',
           strokeWidth: 2.5,
@@ -398,4 +498,53 @@ export class RoughJsAdapter implements ICanvasAdapter {
       shape.draw();
     }
   }
+  /**
+   * Parses inline Markdown formatting (**bold**, *italics/notes*, `code`) and renders
+   * clean segments without leaking raw formatting asterisks onto the canvas.
+   */
+  private renderFormattedTextSegments(
+    text: string,
+    startX: number,
+    lineY: number,
+    defaultFont: string,
+    boldFont: string,
+    italicFont: string,
+    color: string
+  ): void {
+    const tokens = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)/g);
+    let curX = startX;
+
+    for (const token of tokens) {
+      if (!token) continue;
+      if (
+        (token.startsWith('**') && token.endsWith('**')) ||
+        (token.startsWith('__') && token.endsWith('__'))
+      ) {
+        const clean = token.slice(2, -2).trim();
+        if (!clean) continue;
+        this.ctx.font = boldFont;
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.fillText(clean, curX, lineY);
+        curX += this.ctx.measureText(clean).width;
+      } else if (
+        (token.startsWith('*') && token.endsWith('*')) ||
+        (token.startsWith('_') && token.endsWith('_'))
+      ) {
+        const clean = token.slice(1, -1).trim();
+        if (!clean) continue;
+        this.ctx.font = italicFont;
+        this.ctx.fillStyle = '#CBD5E1';
+        this.ctx.fillText(clean, curX, lineY);
+        curX += this.ctx.measureText(clean).width;
+      } else {
+        const clean = token.replace(/[*_]/g, '');
+        if (!clean) continue;
+        this.ctx.font = defaultFont;
+        this.ctx.fillStyle = color;
+        this.ctx.fillText(clean, curX, lineY);
+        curX += this.ctx.measureText(clean).width;
+      }
+    }
+  }
+
 }

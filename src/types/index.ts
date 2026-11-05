@@ -28,6 +28,7 @@ export interface ShapeOptions {
   strokeWidth?: number;
   zIndex?: number;
   writingStyle?: 'handwriting' | 'normal' | 'mixed' | string;
+  preserveExactPosition?: boolean;
 }
 
 export interface ArrowOptions extends ShapeOptions {
@@ -106,15 +107,17 @@ export interface DiagramNode {
   parent?: string;
   items?: string[];
   color?: string;
-  flow?: 'auto' | 'down' | 'right' | 'left';
+  flow?: 'auto' | 'down' | 'right' | 'left' | 'up';
   children?: DiagramNode[];
 }
 
 export interface DiagramOptions {
   title?: string;
-  diagramType?: 'tree' | 'flowchart' | 'process' | 'comparison' | 'hybrid';
+  diagramType?: 'tree' | 'flowchart' | 'process' | 'comparison' | 'hybrid' | 'card' | 'concept_card';
   root?: string;
   nodes?: DiagramNode[];
+  items?: string[];
+  category?: string;
   direction?: 'TB' | 'LR' | string;
   position?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center' | 'custom';
   x?: number;
@@ -124,12 +127,28 @@ export interface DiagramOptions {
   attachToNode?: string;
   existingShapes?: ShapePayload[];
   colorTheme?: string;
+  color?: string;
   writingStyle?: 'handwriting' | 'normal' | 'mixed' | string;
+  preserveExactPosition?: boolean;
+}
+
+export interface SlideMediaOptions {
+  mediaId: string;
+  mediaType: 'image' | 'video';
+  url: string;
+  fileName?: string;
+  mimeType?: string;
+  naturalWidth?: number;
+  naturalHeight?: number;
+  durationSec?: number;
+  posterDataUrl?: string;
+  shareAudioWithAI?: boolean;
 }
 
 export interface ShapePayload {
+  id?: string;
   kind: 'shape';
-  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram';
+  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram' | 'image' | 'video';
   x: number;
   y: number;
   width?: number;
@@ -141,15 +160,17 @@ export interface ShapePayload {
 }
 
 export interface HandwritingPayload {
+  id?: string;
   kind: 'handwriting';
   text: string;
   position: Point;
-  style: 'title' | 'body' | 'annotation';
+  style: 'title' | 'body' | 'annotation' | 'subtitle';
   fontSize?: number;
   writingStyle?: 'handwriting' | 'normal' | 'mixed' | string;
   color?: string;
   direction: 'rtl' | 'ltr';
   align?: 'left' | 'center' | 'right';
+  allowWideElastic?: boolean;
   /** Per-character timing from TTS alignment (server time, will be converted) */
   charTimings: CharTiming[];
 }
@@ -286,6 +307,22 @@ export interface ShapedWord {
   totalWidth: number;
   /** Total height of the word */
   totalHeight: number;
+  /** Whether this word starts a new explicit line (e.g. after \n or list item break) */
+  lineBreakBefore?: boolean;
+}
+
+export interface LanguageItem {
+  code: string;
+  name: string;
+  nativeName: string;
+  flag: string;
+  family?: string;
+}
+
+export interface LanguageConfig {
+  autoDetect: boolean;
+  primary: string;
+  secondary: string[];
 }
 
 export interface SyncTelemetry {

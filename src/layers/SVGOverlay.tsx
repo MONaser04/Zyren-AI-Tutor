@@ -1,28 +1,14 @@
 /**
- * SVGOverlay — Transparent SVG layer for animated Arabic handwriting.
- *
- * This is the upper rendering layer in the Two-Layer UI architecture.
- * It sits as a transparent overlay above the Canvas (Rough.js) layer.
- *
- * Animation Technique:
- * - Each word is a filled <path> element (static glyph) clipped by a <clipPath>
- * - The clipPath contains a reveal mask path with stroke-dashoffset animation
- * - Animation is driven imperatively via JS (no CSS transitions)
- * - The seek(time) method is called every rAF frame by the Sync Engine
- *
- * Architecture Constraint Compliance:
- * - Handwriting animation is ONLY in SVG (never in Canvas)
- * - stroke-dashoffset is applied to the MASK, not the glyph itself
+ * SVGOverlay — Transparent SVG layer for animated handwriting with multi-line list layout
+ * and elastic widow/orphan tail prevention.
  */
 import React, { useRef, useEffect, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { ArabicShaper } from './ArabicShaper';
 import type { HandwritingPayload, WordAnimation } from '../types';
 
-// ─── Public API (Imperative Handle) ───────────────────────────
-
 export interface SVGOverlayHandle {
-  /** Add a word to the animation timeline */
-  addWord(payload: HandwritingPayload): void;
+  /** Add a word/block to the animation timeline (or render immediately if instant=true) */
+  addWord(payload: HandwritingPayload, instant?: boolean): void;
   /** Seek all animations to a specific audio time */
   seek(audioTime: number): void;
   /** Freeze the current animation state (for barge-in) */
@@ -33,7 +19,7 @@ export interface SVGOverlayHandle {
   clear(): void;
   /** Get the number of words currently in the timeline */
   getWordCount(): number;
-  /** Restore all words onto the overlay and reveal them fully */
+  /** Restore all words onto the overlay and reveal them immediately */
   setWords(payloads: HandwritingPayload[]): void;
 }
 
@@ -44,27 +30,24 @@ interface SVGOverlayProps {
   fontSize?: number;
   textColor?: string;
   maskStrokeWidth?: number;
-  viewBox?: string;  // SVG viewBox for zoom — per SVG 2 spec (w3.org TR/SVG2 June 2026)
+  viewBox?: string;
   onViewBoxChange?: (viewBox: string) => void;
+  onWritingFocus?: (target: { x: number; y: number; width: number; height: number; kind?: string }) => void;
 }
 
-/**
- * SVGOverlay React component with imperative API.
- *
- * Usage:
- * ```tsx
- * const svgRef = useRef<SVGOverlayHandle>(null);
- *
- * // In the Sync Engine rAF loop:
- * svgRef.current?.seek(audioClock.currentTime);
- *
- * // When a new word arrives from the server:
- * svgRef.current?.addWord(handwritingPayload);
- * ```
- */
 export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
   function SVGOverlay(
-    { width, height, fontUrl, fontSize = 48, textColor = '#e0e0e0', maskStrokeWidth = 120, viewBox, onViewBoxChange },
+    {
+      width,
+      height,
+      fontUrl,
+      fontSize = 48,
+      textColor = '#e0e0e0',
+      maskStrokeWidth = 120,
+      viewBox,
+      onViewBoxChange,
+      onWritingFocus,
+    },
     ref
   ) {
     const svgRef = useRef<SVGSVGElement>(null);
@@ -74,8 +57,12 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
     const frozenRef = useRef(false);
     const committedWordsRef = useRef<Set<string>>(new Set());
     const prevDimRef = useRef({ width: 0, height: 0 });
+    const activeRafsRef = useRef<Set<number>>(new Set());
+    const activeTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+    const onWritingFocusRef = useRef(onWritingFocus);
+    onWritingFocusRef.current = onWritingFocus;
+    const lastFocusEmitRef = useRef<number>(0);
 
-    // Initialize the Arabic shaper
     useEffect(() => {
       const shaper = new ArabicShaper(fontUrl);
       shaperRef.current = shaper;
@@ -86,12 +73,20 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
       });
     }, [fontUrl, width, height, onViewBoxChange]);
 
-    /**
-     * Adds a word to the SVG overlay with its timing data.
-     * Creates the SVG elements (glyph path + clip mask) imperatively.
-     */
+    const cancelAllPendingAnimations = useCallback(() => {
+      for (const rafId of activeRafsRef.current) {
+        cancelAnimationFrame(rafId);
+      }
+      activeRafsRef.current.clear();
+
+      for (const timerId of activeTimeoutsRef.current) {
+        clearTimeout(timerId);
+      }
+      activeTimeoutsRef.current.clear();
+    }, []);
+
     const addWord = useCallback(
-      (payload: HandwritingPayload) => {
+      (payload: HandwritingPayload, instant: boolean = false) => {
         const svg = svgRef.current;
         const shaper = shaperRef.current;
         if (!svg || !shaper || !shaper.isLoaded) {
@@ -99,66 +94,85 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
           return;
         }
 
+        const isHeaderZone = payload.position.y <= 125 && payload.position.x < 900;
+        const isTitle = payload.style === 'title' || isHeaderZone;
+        const isSubtitle = payload.style === 'subtitle';
+
         const effectiveFontSize = payload.fontSize ?? (
-          payload.style === 'title' ? 44 :
+          isTitle ? 44 :
+          isSubtitle ? 32 :
           payload.style === 'annotation' ? 22 :
-          24
+          26
         );
 
         const words = shaper.shapeToSVGPaths(payload.text, effectiveFontSize);
-        const spaceWidth = effectiveFontSize * 0.35;
-        const totalWidth = words.reduce((sum, w) => sum + w.totalWidth, 0) + Math.max(0, words.length - 1) * spaceWidth;
-        let yCursor = payload.position.y;
+        if (words.length === 0) return;
 
-        // Determine alignment
+        const spaceWidth = effectiveFontSize * 0.34;
+
+        // Calculate first-line width for alignment and title underline
+        let firstLineWordsCount = 0;
+        let firstLineWidth = 0;
+        for (let i = 0; i < words.length; i++) {
+          if (i > 0 && words[i].lineBreakBefore) break;
+          firstLineWidth += words[i].totalWidth + (firstLineWordsCount > 0 ? spaceWidth : 0);
+          firstLineWordsCount++;
+        }
+
+        // Unify top-left Y coordinate with MathOverlay and CanvasLayer (baseline is +0.82 * fontSize from top)
+        const baselineOffset = payload.style === 'annotation' ? 0 : Math.round(effectiveFontSize * 0.82);
+        let yCursor = payload.position.y + baselineOffset;
+
         const isRtl = payload.direction === 'rtl';
         let align = payload.align;
         if (!align) {
           align = payload.style === 'annotation' ? 'center' : (isRtl ? 'right' : 'left');
         }
 
-        // Calculate starting anchor xOffset
-        let xCursor = payload.position.x;
-        if (align === 'center') {
-          xCursor = isRtl ? (payload.position.x + totalWidth / 2) : (payload.position.x - totalWidth / 2);
-        } else if (align === 'right') {
-          xCursor = isRtl ? payload.position.x : (payload.position.x - totalWidth);
-        } else { // 'left'
-          xCursor = isRtl ? (payload.position.x + totalWidth) : payload.position.x;
-        }
+        const computeLineStartX = (lineW: number): number => {
+          if (align === 'center') {
+            return isRtl ? (payload.position.x + lineW / 2) : (payload.position.x - lineW / 2);
+          } else if (align === 'right') {
+            return isRtl ? payload.position.x : (payload.position.x - lineW);
+          }
+          return isRtl ? (payload.position.x + lineW) : payload.position.x;
+        };
 
-        // Calculate bounded line-wrapping limit based on horizontal domain
-        const isTitle = payload.style === 'title';
+        const lineStartX = computeLineStartX(firstLineWidth);
+        let xCursor = lineStartX;
+
+        // Elastic column wrapping limits with orphan-tail lookahead
         const startX = payload.position.x;
         let wrapLimitX = 1850;
+        let hardMaxX = 1875;
+        const elasticTailAllowance = payload.allowWideElastic ? 240 : 125;
+
         if (!isTitle) {
           if (startX < 920) {
-            // Left column/branch: keep strictly on the left half of the board
-            const maxW = Math.min(620, Math.max(380, 900 - startX));
+            const maxW = Math.min(750, Math.max(420, 900 - startX));
             wrapLimitX = startX + maxW;
+            hardMaxX = payload.allowWideElastic ? 1760 : 975;
           } else {
-            // Right column/branch: keep strictly in the right half
-            const maxW = Math.min(620, Math.max(380, 1850 - startX));
+            const maxW = Math.min(780, Math.max(420, 1850 - startX));
             wrapLimitX = startX + maxW;
+            hardMaxX = 1875;
           }
         }
 
-        // Distribute character timings across words
         let charIndex = 0;
         let wordIndex = 0;
 
-        for (const word of words) {
+        for (let wIdx = 0; wIdx < words.length; wIdx++) {
+          const word = words[wIdx];
           const wordId = `word-${wordCounterRef.current++}`;
 
-          // Skip any leading spaces/whitespace in charTimings before this word
           while (charIndex < payload.charTimings.length && /\s/.test(payload.charTimings[charIndex].char)) {
             charIndex++;
           }
 
-          // Calculate timing for this word
           const wordCharCount = [...word.text].filter((c) => {
             const code = c.charCodeAt(0);
-            return !(code >= 0x064B && code <= 0x065F); // skip tashkeel
+            return !(code >= 0x064B && code <= 0x065F);
           }).length;
 
           const wordTimings = payload.charTimings.slice(charIndex, charIndex + wordCharCount);
@@ -167,13 +181,36 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
           const startTime = wordTimings.length > 0 ? wordTimings[0].start : 0;
           const endTime = wordTimings.length > 0 ? wordTimings[wordTimings.length - 1].end : 0;
 
-          // Check if word would exceed column wrapping boundary
-          if (!isRtl && (xCursor + word.totalWidth > wrapLimitX) && (xCursor > payload.position.x)) {
-            yCursor += effectiveFontSize * 1.35;
+          // 1. Explicit logical line break (\n or separated list item)
+          if (wIdx > 0 && word.lineBreakBefore) {
+            yCursor += Math.round(effectiveFontSize * 1.48);
             xCursor = payload.position.x;
+          } else if (!isRtl && (xCursor + word.totalWidth > wrapLimitX) && (xCursor > payload.position.x)) {
+            // 2. Elastic Widow/Orphan Tail Lookahead:
+            // Check how many words and pixels remain in the current logical line before breaking
+            let remainingWidth = word.totalWidth;
+            let remainingWords = 1;
+            for (let k = wIdx + 1; k < words.length; k++) {
+              if (words[k].lineBreakBefore) break;
+              remainingWidth += spaceWidth + words[k].totalWidth;
+              remainingWords++;
+            }
+
+            const prevWordText = wIdx > 0 ? words[wIdx - 1].text : '';
+            const isEquationTail =
+              word.text === '=' ||
+              word.text.startsWith('=') ||
+              prevWordText === '=' ||
+              (remainingWords <= 3 && remainingWidth <= elasticTailAllowance);
+
+            const canFitElastically = isEquationTail && (xCursor + remainingWidth <= hardMaxX);
+
+            if (!canFitElastically) {
+              yCursor += Math.round(effectiveFontSize * 1.38);
+              xCursor = payload.position.x;
+            }
           }
 
-          // For RTL: move cursor left by word width
           let wordX = xCursor;
           if (isRtl) {
             xCursor -= word.totalWidth;
@@ -184,10 +221,9 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
             xCursor += word.totalWidth + spaceWidth;
           }
 
-          // Create SVG elements
           const effectiveColor = payload.color || textColor;
           const dynamicMaskStrokeWidth = Math.max(60, Math.round(effectiveFontSize * 2.8));
-          const { group, maskElement, totalLength, unmask } = createWordSVG(
+          const { maskElement, totalLength, unmask } = createWordSVG(
             svg,
             wordId,
             word.combinedPath,
@@ -195,15 +231,20 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
             wordX,
             yCursor,
             effectiveColor,
-            dynamicMaskStrokeWidth
+            dynamicMaskStrokeWidth,
+            instant
           );
 
-          // Natural wall-clock reveal animation
-          const wordDuration = Math.max(220, Math.min(600, word.text.length * 40));
-          const wordDelay = wordIndex * 70;
+          if (instant) {
+            committedWordsRef.current.add(wordId);
+            wordIndex++;
+            continue;
+          }
+
+          const wordDuration = Math.max(200, Math.min(550, word.text.length * 38));
+          const wordDelay = wordIndex * 65;
           const animStartTime = performance.now() + wordDelay;
 
-          // Register in timeline
           const animRecord: WordAnimation = {
             wordId,
             startTime,
@@ -214,16 +255,36 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
           };
           timelineRef.current.set(wordId, animRecord);
 
-          // Smooth autonomous rAF reveal with guaranteed completion
-          let animFrameId: number;
+          const capturedWordX = wordX;
+          const capturedWordY = yCursor;
+          const capturedWordW = word.totalWidth;
+
+          let animFrameId = 0;
           const animateStep = (now: number) => {
+            activeRafsRef.current.delete(animFrameId);
             if (frozenRef.current) return;
             if (now < animStartTime) {
               animFrameId = requestAnimationFrame(animateStep);
+              activeRafsRef.current.add(animFrameId);
               return;
             }
             const elapsed = now - animStartTime;
             const progress = Math.min(1, elapsed / wordDuration);
+
+            if (onWritingFocusRef.current && now - lastFocusEmitRef.current >= 55) {
+              lastFocusEmitRef.current = now;
+              const easedTip = easeOutCubic(progress);
+              const tipX = isRtl
+                ? capturedWordX + capturedWordW * (1 - easedTip)
+                : capturedWordX + capturedWordW * easedTip;
+              onWritingFocusRef.current({
+                x: tipX,
+                y: Math.max(0, capturedWordY - effectiveFontSize),
+                width: Math.max(40, capturedWordW),
+                height: Math.round(effectiveFontSize * 1.35),
+                kind: 'handwriting-pen',
+              });
+            }
 
             if (progress >= 0.98) {
               animRecord.completed = true;
@@ -233,26 +294,30 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
               const eased = easeOutCubic(progress);
               maskElement.style.strokeDashoffset = `${(totalLength * (1 - eased)).toFixed(1)}`;
               animFrameId = requestAnimationFrame(animateStep);
+              activeRafsRef.current.add(animFrameId);
             }
           };
           animFrameId = requestAnimationFrame(animateStep);
+          activeRafsRef.current.add(animFrameId);
 
-          // Absolute safety timeout: Guarantee complete unmasking
-          setTimeout(() => {
+          const timeoutId = setTimeout(() => {
+            activeTimeoutsRef.current.delete(timeoutId);
             animRecord.completed = true;
             committedWordsRef.current.add(wordId);
             unmask();
           }, wordDelay + wordDuration + 150);
+          activeTimeoutsRef.current.add(timeoutId);
 
           wordIndex++;
         }
 
-        // Visual accent underline strictly for handwritten Main Topic Titles at header zone
-        if (payload.style === 'title' || (payload.position.y <= 110 && payload.position.x < 450)) {
+        // Visual accent underline for handwritten Main Topic Titles and decorated Subtitles/Headers
+        const shouldUnderline = isTitle || isSubtitle || Boolean((payload as any).options?.underline);
+        if (shouldUnderline) {
           const underlineId = `title-underline-${wordCounterRef.current++}`;
-          const lineY = yCursor + fontSize * 0.35;
-          const lineX1 = align === 'center' ? payload.position.x - totalWidth / 2 : payload.position.x;
-          const lineX2 = lineX1 + totalWidth;
+          const lineY = yCursor + Math.round(effectiveFontSize * 0.28);
+          const lineX1 = align === 'center' ? payload.position.x - firstLineWidth / 2 : payload.position.x;
+          const lineX2 = lineX1 + firstLineWidth;
 
           const lineElem = document.createElementNS('http://www.w3.org/2000/svg', 'line');
           lineElem.setAttribute('x1', `${lineX1}`);
@@ -265,25 +330,25 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
           lineElem.setAttribute('class', 'word-group title-accent-line');
           lineElem.setAttribute('data-word-id', underlineId);
 
-          const lineLength = Math.abs(lineX2 - lineX1);
-          lineElem.style.strokeDasharray = `${lineLength}`;
-          lineElem.style.strokeDashoffset = `${lineLength}`;
-          lineElem.style.transition = 'stroke-dashoffset 0.35s ease-out';
+          if (!instant) {
+            const lineLength = Math.abs(lineX2 - lineX1);
+            lineElem.style.strokeDasharray = `${lineLength}`;
+            lineElem.style.strokeDashoffset = `${lineLength}`;
+            lineElem.style.transition = 'stroke-dashoffset 0.35s ease-out';
+
+            const ulTimer = setTimeout(() => {
+              activeTimeoutsRef.current.delete(ulTimer);
+              lineElem.style.strokeDashoffset = '0';
+            }, Math.max(200, words.length * 65 + 200));
+            activeTimeoutsRef.current.add(ulTimer);
+          }
 
           svg.appendChild(lineElem);
-
-          setTimeout(() => {
-            lineElem.style.strokeDashoffset = '0';
-          }, Math.max(200, words.length * 70 + 200));
         }
       },
       [fontSize, textColor, maskStrokeWidth]
     );
 
-    /**
-     * Seeks all word animations to the given audio time.
-     * Called every rAF frame from the Sync Engine.
-     */
     const seek = useCallback((audioTime: number) => {
       if (frozenRef.current) return;
 
@@ -293,7 +358,6 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
         const duration = anim.endTime - anim.startTime;
 
         if (audioTime >= anim.endTime || duration <= 0 || (anim.startTime > 0 && audioTime - anim.startTime > 1.5)) {
-          // Fully revealed — unmask immediately so zero letter clipping occurs
           anim.maskElement.style.strokeDashoffset = '0';
           anim.completed = true;
           committedWordsRef.current.add(anim.wordId);
@@ -313,10 +377,8 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
       const svg = svgRef.current;
       if (!svg) return;
 
-      // Remove words that haven't been fully committed
       for (const [wordId] of timelineRef.current) {
         if (!committedWordsRef.current.has(wordId)) {
-          // Remove SVG elements
           const group = svg.querySelector(`[data-word-id="${wordId}"]`);
           if (group) group.remove();
 
@@ -331,10 +393,11 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
     }, []);
 
     const clear = useCallback(() => {
+      cancelAllPendingAnimations();
+
       const svg = svgRef.current;
       if (!svg) return;
 
-      // Remove all word groups, masks, and clip paths
       const defs = svg.querySelector('defs');
       if (defs) defs.innerHTML = '';
 
@@ -344,10 +407,8 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
       timelineRef.current.clear();
       committedWordsRef.current.clear();
       frozenRef.current = false;
-    }, []);
+    }, [cancelAllPendingAnimations]);
 
-    // Note: We do NOT clear SVG overlay on dimension change/resize
-    // to preserve all written handwriting during zoom and window resizing.
     useEffect(() => {
       prevDimRef.current = { width, height };
     }, [width, height]);
@@ -358,21 +419,12 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
       (payloads: HandwritingPayload[]) => {
         clear();
         for (const p of payloads) {
-          addWord(p);
-        }
-        seek(9999999);
-
-        // Ensure all restored word groups have masks removed for clean rendering
-        const svg = svgRef.current;
-        if (svg) {
-          const groups = svg.querySelectorAll('.word-group');
-          groups.forEach((g) => g.removeAttribute('mask'));
+          addWord(p, true);
         }
       },
-      [clear, addWord, seek]
+      [clear, addWord]
     );
 
-    // Expose imperative handle
     useImperativeHandle(
       ref,
       () => ({
@@ -411,9 +463,6 @@ export const SVGOverlay = forwardRef<SVGOverlayHandle, SVGOverlayProps>(
   }
 );
 
-/**
- * Standalone helper methods for creating animated SVG word glyphs with reveal masks.
- */
 function createWordSVG(
   svg: SVGSVGElement,
   wordId: string,
@@ -422,11 +471,33 @@ function createWordSVG(
   x: number,
   y: number,
   color: string,
-  maskStrokeWidth: number
+  maskStrokeWidth: number,
+  instant: boolean = false
 ): { group: SVGGElement; maskElement: SVGPathElement; totalLength: number; unmask: () => void } {
   const ns = 'http://www.w3.org/2000/svg';
 
-  // 1. Create mask in <defs>
+  const group = document.createElementNS(ns, 'g');
+  group.setAttribute('class', 'word-group');
+  group.setAttribute('data-word-id', wordId);
+  group.setAttribute('transform', `translate(${x}, ${y})`);
+
+  const glyphElement = document.createElementNS(ns, 'path');
+  glyphElement.setAttribute('d', glyphPath);
+  glyphElement.setAttribute('fill', color);
+  glyphElement.setAttribute('class', 'glyph');
+  group.appendChild(glyphElement);
+
+  const maskElement = document.createElementNS(ns, 'path');
+  if (instant) {
+    svg.appendChild(group);
+    return {
+      group,
+      maskElement,
+      totalLength: 0,
+      unmask: () => {},
+    };
+  }
+
   let defs = svg.querySelector('defs');
   if (!defs) {
     defs = document.createElementNS(ns, 'defs');
@@ -442,7 +513,6 @@ function createWordSVG(
   mask.setAttribute('width', '8000');
   mask.setAttribute('height', '8000');
 
-  const maskElement = document.createElementNS(ns, 'path');
   maskElement.setAttribute('d', maskPath);
   maskElement.setAttribute('stroke', 'white');
   maskElement.setAttribute('stroke-width', `${Math.max(180, maskStrokeWidth)}`);
@@ -453,25 +523,11 @@ function createWordSVG(
   mask.appendChild(maskElement);
   defs.appendChild(mask);
 
-  // Calculate total path length for dashoffset
   const totalLength = maskElement.getTotalLength();
-
-  // Set initial state: fully masked (hidden)
   maskElement.style.strokeDasharray = `${totalLength}`;
   maskElement.style.strokeDashoffset = `${totalLength}`;
 
-  // 2. Create the visible glyph group
-  const group = document.createElementNS(ns, 'g');
-  group.setAttribute('class', 'word-group');
-  group.setAttribute('data-word-id', wordId);
-  group.setAttribute('transform', `translate(${x}, ${y})`);
   group.setAttribute('mask', `url(#mask-${wordId})`);
-
-  const glyphElement = document.createElementNS(ns, 'path');
-  glyphElement.setAttribute('d', glyphPath);
-  glyphElement.setAttribute('fill', color);
-  glyphElement.setAttribute('class', 'glyph');
-  group.appendChild(glyphElement);
   svg.appendChild(group);
 
   const unmask = () => {
@@ -485,10 +541,6 @@ function createWordSVG(
   return { group, maskElement, totalLength, unmask };
 }
 
-/**
- * Cubic ease-out for smoother handwriting reveal.
- * Starts fast (pen touching down), slows at the end (natural deceleration).
- */
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }

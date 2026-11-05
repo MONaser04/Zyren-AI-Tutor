@@ -7,15 +7,56 @@ import { MathOverlay, type MathOverlayHandle } from '../layers/MathOverlay';
 import { GraphOverlay, type GraphOverlayHandle } from '../layers/GraphOverlay';
 import { Graph3DOverlay, type Graph3DOverlayHandle } from '../layers/Graph3DOverlay';
 import { VennOverlay, type VennOverlayHandle } from '../layers/VennOverlay';
+import { SlideMediaOverlay, type SlideMediaOverlayHandle } from '../layers/SlideMediaOverlay';
 import { SyncEngine } from '../engine/SyncEngine';
 import { useTeacherStore } from '../store/useTeacherStore';
 import { SlidePanel, type WhiteboardPage, type UserDrawingPath, type UserDrawingText } from './SlidePanel';
 import { UserDrawingLayer } from './UserDrawingLayer';
 import { FileMenu, type RecentSession } from './FileMenu';
+import {
+  createBlankWhiteboardPage,
+  DEFAULT_WHITEBOARD_TITLE,
+  reconcileLiveChatMessages,
+} from './whiteboardSession';
 import { VoiceSelectorModal, ALL_GEMINI_VOICES } from './VoiceSelectorModal';
 import { ModelSelectorModal, SUPPORTED_MODELS } from './ModelSelectorModal';
+import {
+  PersonaSelectorModal,
+  VERBOSITY_OPTIONS,
+  VOCAL_TONE_OPTIONS,
+  LEARNER_PROFILE_OPTIONS,
+  type VerbosityMode,
+  type VocalToneMode,
+  type LearnerProfileMode,
+  type SpeakingStyleConfig,
+} from './PersonaSelectorModal';
+import {
+  LanguageSelectorModal,
+  SUPPORTED_LANGUAGES,
+  DEFAULT_LANGUAGE_CONFIG,
+} from './LanguageSelectorModal';
+import type { LanguageConfig } from '../types';
 import { FloatingVideoPiP } from './FloatingVideoPiP';
 import { ChatDrawer, type ChatMessage, type ChatAttachment } from './ChatDrawer';
+import { ApiKeyManagerModal, type ApiKeyStatusInfo } from './ApiKeyModal';
+import {
+  computeAutoFollowPan,
+  stepAutoFollowLerp,
+  type WritingFocusTarget,
+} from '../engine/CameraFollowController';
+import {
+  createSessionId,
+  hasSubstantiveSessionContent,
+  deriveSmartSessionTitle,
+  persistSessionDualTier,
+  flushSessionEmergencyOnExit,
+  loadLatestAutoSavedSession,
+  loadSpecificSavedSession,
+  listAllSavedSessions,
+  deleteSavedSessionEverywhere,
+  type SavedTutorSession,
+  type SavedSessionSummary,
+} from '../services/sessionAutoSave';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import type { DrawCommand, HandwritingPayload, ShapePayload, SyncTelemetry, CharTiming } from '../types';
@@ -33,6 +74,26 @@ export const WRITING_STYLES = [
   { id: 'normal', label: 'Normal Text', short: 'Text', icon: '🔤' },
 ];
 
+function mergeVaultSummariesWithRecent(
+  summaries: SavedSessionSummary[],
+  existing: RecentSession[]
+): RecentSession[] {
+  const mapped: RecentSession[] = summaries.map((s) => ({
+    id: s.id,
+    name: s.title || DEFAULT_WHITEBOARD_TITLE,
+    timestamp: s.updatedAt,
+    slideCount: s.slideCount || 1,
+    messageCount: s.messageCount || 0,
+  }));
+  const seenIds = new Set(mapped.map((m) => m.id));
+  for (const leg of existing) {
+    if (!seenIds.has(leg.id)) {
+      mapped.push(leg);
+    }
+  }
+  return mapped.sort((a, b) => b.timestamp - a.timestamp).slice(0, 40);
+}
+
 interface WhiteboardProps {
   currentVoice?: string;
   onSelectVoice?: (voiceId: string) => void;
@@ -42,8 +103,17 @@ interface WhiteboardProps {
   onSelectModel?: (modelId: string, thinkingLevel?: string) => void;
   currentThinkingLevel?: string;
   onSelectThinkingLevel?: (thinkingLevel: string) => void;
+  verbosity?: VerbosityMode;
+  vocalTone?: VocalToneMode;
+  learnerProfile?: LearnerProfileMode;
+  onUpdateSpeakingStyle?: (next: SpeakingStyleConfig) => void;
   isSpeakerMuted?: boolean;
   onToggleSpeakerMute?: () => void;
+  apiKeyStatus?: ApiKeyStatusInfo | null;
+  onApiKeyUpdated?: (status: ApiKeyStatusInfo) => void;
+  onApiKeyDeleted?: () => void;
+  languageConfig?: LanguageConfig;
+  onUpdateLanguageConfig?: (next: LanguageConfig) => void;
 }
 
 export function Whiteboard({
@@ -55,8 +125,17 @@ export function Whiteboard({
   onSelectModel,
   currentThinkingLevel = 'high',
   onSelectThinkingLevel,
+  verbosity = 'balanced',
+  vocalTone = 'natural',
+  learnerProfile = 'general',
+  onUpdateSpeakingStyle,
   isSpeakerMuted = false,
   onToggleSpeakerMute,
+  apiKeyStatus = null,
+  onApiKeyUpdated,
+  onApiKeyDeleted,
+  languageConfig = DEFAULT_LANGUAGE_CONFIG,
+  onUpdateLanguageConfig,
 }: WhiteboardProps) {
   const canvasRef = useRef<CanvasLayerHandle>(null);
   const svgRef = useRef<SVGOverlayHandle>(null);
@@ -64,11 +143,15 @@ export function Whiteboard({
   const graphRef = useRef<GraphOverlayHandle>(null);
   const graph3dRef = useRef<Graph3DOverlayHandle>(null);
   const vennRef = useRef<VennOverlayHandle>(null);
+  const mediaRef = useRef<SlideMediaOverlayHandle>(null);
   const engineRef = useRef<SyncEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const styleMenuRef = useRef<HTMLDivElement>(null);
   const quickFileInputRef = useRef<HTMLInputElement>(null);
+  const slideMediaInputRef = useRef<HTMLInputElement>(null);
+  const forceImmediateVisionFrameRef = useRef<boolean>(false);
+  const [isCanvasDragOver, setIsCanvasDragOver] = useState<boolean>(false);
   const currentStyleRef = useRef(currentStyle);
   currentStyleRef.current = currentStyle;
 
@@ -81,12 +164,33 @@ export function Whiteboard({
   const [attachedFile, setAttachedFile] = useState<ChatAttachment | null>(null);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
+  const [isPersonaModalOpen, setIsPersonaModalOpen] = useState(false);
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(false);
   const [isStyleMenuOpen, setIsStyleMenuOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const chatMessagesRef = useRef<ChatMessage[]>(chatMessages);
+  chatMessagesRef.current = chatMessages;
 
-  // Session Title & Recent Files
-  const [sessionTitle, setSessionTitle] = useState<string>('Calculus - Volume of Revolution');
+  // Session Identity, Title & Continuous Dual-Tier Auto-Save state
+  const sessionIdRef = useRef<string>(createSessionId());
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => sessionIdRef.current);
+  const sessionCreatedAtRef = useRef<number>(Date.now());
+  const isAutoTitledRef = useRef<boolean>(true);
+  const autoSaveHydratedRef = useRef<boolean>(false);
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('saved');
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState<number | null>(null);
+
+  const [sessionTitle, setSessionTitle] = useState<string>(DEFAULT_WHITEBOARD_TITLE);
+  const sessionTitleRef = useRef<string>(sessionTitle);
+  sessionTitleRef.current = sessionTitle;
+
+  const handleUpdateSessionTitle = useCallback((nextTitle: string) => {
+    isAutoTitledRef.current = false;
+    setSessionTitle(nextTitle);
+  }, []);
+
   const [recentSessions, setRecentSessions] = useState<RecentSession[]>(() => {
     try {
       const saved = localStorage.getItem('AI_TUTOR_RECENT_SESSIONS');
@@ -96,21 +200,37 @@ export function Whiteboard({
     }
   });
 
+  // Live Writing Auto-Follow Camera state (toggleable ON/OFF)
+  const [isAutoFollowEnabled, setIsAutoFollowEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('AI_TUTOR_AUTO_FOLLOW');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const isAutoFollowRef = useRef<boolean>(isAutoFollowEnabled);
+  isAutoFollowRef.current = isAutoFollowEnabled;
+  const lastManualCameraMoveRef = useRef<number>(-Infinity);
+  const manualCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoFollowTargetPanRef = useRef<{ x: number; y: number } | null>(null);
+  const autoFollowRafRef = useRef<number | null>(null);
+  const lastFocusTargetRef = useRef<WritingFocusTarget | null>(null);
+  const isSwitchingSlideRef = useRef<boolean>(false);
+
   // Multi-Board Slide Deck state
-  const [pages, setPages] = useState<WhiteboardPage[]>([
-    {
-      id: 'page-1',
-      pageNumber: 1,
-      title: 'Volume of Solid of Revolution',
-      shapes: [],
-      handwriting: [],
-      createdAt: Date.now(),
-    },
-  ]);
+  const [pages, setPages] = useState<WhiteboardPage[]>(() => [createBlankWhiteboardPage()]);
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [isSlidePanelOpen, setIsSlidePanelOpen] = useState<boolean>(() => typeof window !== 'undefined' ? window.innerWidth > 768 : true);
   const [showRotateBanner, setShowRotateBanner] = useState(true);
   const [isPortraitMobile, setIsPortraitMobile] = useState(false);
+
+  const isChatDrawerOpenRef = useRef(isChatDrawerOpen);
+  isChatDrawerOpenRef.current = isChatDrawerOpen;
+  const isSlidePanelOpenRef = useRef(isSlidePanelOpen);
+  isSlidePanelOpenRef.current = isSlidePanelOpen;
+  const isToolbarPinnedRef = useRef(isToolbarPinned);
+  isToolbarPinnedRef.current = isToolbarPinned;
 
   useEffect(() => {
     const checkOrientation = () => {
@@ -185,6 +305,59 @@ export function Whiteboard({
   const room = useMaybeRoomContext();
   const { setTelemetry, showDebugOverlay, toggleDebugOverlay } = useTeacherStore();
 
+  // Track LiveKit Agent presence
+  const [isAgentReady, setIsAgentReady] = useState<boolean>(() => {
+    return Boolean(room && room.remoteParticipants && room.remoteParticipants.size > 0);
+  });
+
+  useEffect(() => {
+    if (!room) return;
+    const updateAgentStatus = () => {
+      const hasAgent = room.remoteParticipants.size > 0;
+      setIsAgentReady(hasAgent);
+    };
+    updateAgentStatus();
+    room.on(RoomEvent.ParticipantConnected, updateAgentStatus);
+    room.on(RoomEvent.ParticipantDisconnected, updateAgentStatus);
+    room.on(RoomEvent.Connected, updateAgentStatus);
+    room.on(RoomEvent.Reconnected, updateAgentStatus);
+
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, updateAgentStatus);
+      room.off(RoomEvent.ParticipantDisconnected, updateAgentStatus);
+      room.off(RoomEvent.Connected, updateAgentStatus);
+      room.off(RoomEvent.Reconnected, updateAgentStatus);
+    };
+  }, [room]);
+
+  // Auto-recovery: If room connected before agent process was registered,
+  // automatically reconnect the room as soon as the agent becomes ready.
+  useEffect(() => {
+    if (!room || room.state !== 'connected' || isAgentReady) return;
+
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      if (cancelled || isAgentReady) return;
+      try {
+        const res = await fetch('/api/agent-status');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ready && room.remoteParticipants.size === 0) {
+            console.log('[Whiteboard] Agent is ready now! Triggering soft room reconnect...');
+            window.dispatchEvent(new CustomEvent('zyren-reconnect-room'));
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [room, room?.state, isAgentReady]);
+
   // ── Native LiveKit Video Management ──
   const [isSplitViewEnabled, setIsSplitViewEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -220,15 +393,34 @@ export function Whiteboard({
     };
   }, [room]);
 
-  // Hot-swap voice and style metadata without reconnecting
+  // Hot-swap voice, model, thinking level, and style metadata without wiping active settings
   useEffect(() => {
     if (room && room.localParticipant) {
-      const newMeta = JSON.stringify({ voice: currentVoice, style: currentStyle });
+      const newMeta = JSON.stringify({
+        voice: currentVoice,
+        style: currentStyle,
+        model: currentModel,
+        thinkingLevel: currentThinkingLevel,
+        verbosity,
+        vocalTone,
+        learnerProfile,
+        languageConfig,
+      });
       room.localParticipant.setMetadata(newMeta);
       console.log('[Whiteboard] Hot-swapped metadata:', newMeta);
     }
     engineRef.current?.setWritingStyle(currentStyle);
-  }, [room, currentVoice, currentStyle]);
+  }, [
+    room,
+    currentVoice,
+    currentStyle,
+    currentModel,
+    currentThinkingLevel,
+    verbosity,
+    vocalTone,
+    learnerProfile,
+    languageConfig,
+  ]);
 
   // Close writing style menu on click outside
   useEffect(() => {
@@ -247,20 +439,28 @@ export function Whiteboard({
   useEffect(() => {
     let ws: WebSocket;
     let reconnectTimeout: number;
+    let isCleanedUp = false;
 
     const connect = () => {
+      if (isCleanedUp) return;
       const wsHost = window.location.hostname || '127.0.0.1';
       ws = new WebSocket(`ws://${wsHost}:8888`);
       directVisionWsRef.current = ws;
 
       ws.onopen = () => {
+        if (isCleanedUp) {
+          ws.close();
+          return;
+        }
         console.log('[DirectVision] WS Connected');
         setWsConnected(true);
       };
 
       ws.onclose = () => {
         setWsConnected(false);
-        reconnectTimeout = window.setTimeout(connect, 3000);
+        if (!isCleanedUp) {
+          reconnectTimeout = window.setTimeout(connect, 3000);
+        }
       };
 
       ws.onerror = (err) => {
@@ -272,12 +472,81 @@ export function Whiteboard({
     connect();
 
     return () => {
+      isCleanedUp = true;
       clearTimeout(reconnectTimeout);
-      if (ws) ws.close();
+      if (ws) {
+        ws.close();
+      }
+      directVisionWsRef.current = null;
     };
   }, []);
 
-  // Unified Direct Vision Compositor
+  // Composite 1280x720 Whiteboard Stage Capture (renders live <video>/<img> frames + annotations in <2ms on video ticks)
+  const cachedOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cachedOverlaySigRef = useRef<string>('');
+
+  const captureCompositeWhiteboardStage = useCallback(async (forceRefreshOverlay = false): Promise<HTMLCanvasElement | null> => {
+    const stageCanvas = document.createElement('canvas');
+    stageCanvas.width = 1280;
+    stageCanvas.height = 720;
+    const stageCtx = stageCanvas.getContext('2d');
+    if (!stageCtx) return null;
+
+    // 1. Paint whiteboard background
+    stageCtx.fillStyle = '#131324';
+    stageCtx.fillRect(0, 0, 1280, 720);
+
+    // 2. Paint live decoded <img> and <video> frames + [PLAYING/PAUSED MM:SS] badge directly from GPU memory
+    if (mediaRef.current) {
+      stageCtx.save();
+      stageCtx.scale(1280 / VIRTUAL_WIDTH, 720 / VIRTUAL_HEIGHT);
+      mediaRef.current.drawMediaToCanvas(stageCtx);
+      stageCtx.restore();
+    }
+
+    // 3. Paint vector/DOM annotations (Rough.js, SVG handwriting, KaTeX math, graphs, user strokes) on top
+    const eng = engineRef.current;
+    const activeP = pagesRef.current[activePageIndexRef.current];
+    const overlaySig = `${activePageIndexRef.current}:${eng ? eng.getDrawnShapes().length : 0}:${eng ? eng.getDrawnHandwriting().length : 0}:${activeP?.userPaths?.length || 0}:${activeP?.userTexts?.length || 0}`;
+
+    if (
+      forceRefreshOverlay ||
+      !cachedOverlayCanvasRef.current ||
+      cachedOverlaySigRef.current !== overlaySig
+    ) {
+      const targetEl = viewportRef.current || document.body;
+      try {
+        const renderedOverlay = await html2canvas(targetEl, {
+          backgroundColor: null,
+          width: viewportRef.current ? VIRTUAL_WIDTH : undefined,
+          height: viewportRef.current ? VIRTUAL_HEIGHT : undefined,
+          scale: viewportRef.current ? 1280 / VIRTUAL_WIDTH : 0.65,
+          useCORS: true,
+          logging: false,
+          ignoreElements: (e) =>
+            e.classList.contains('no-vision') || e.classList.contains('slide-media-overlay'),
+          onclone: (clonedDoc) => {
+            const clonedViewport = clonedDoc.querySelector('.whiteboard-viewport') as HTMLElement | null;
+            if (clonedViewport) {
+              clonedViewport.style.transform = 'none';
+            }
+          },
+        });
+        cachedOverlayCanvasRef.current = renderedOverlay;
+        cachedOverlaySigRef.current = overlaySig;
+      } catch {
+        // Keep last valid overlay if html2canvas fails transiently
+      }
+    }
+
+    if (cachedOverlayCanvasRef.current) {
+      stageCtx.drawImage(cachedOverlayCanvasRef.current, 0, 0, 1280, 720);
+    }
+
+    return stageCanvas;
+  }, []);
+
+  // Unified Direct Vision Compositor (1 FPS Live Video Mode + 3s Static Dedup Mode)
   useEffect(() => {
     if (!wsConnected) {
       if (unifiedVisionIntervalRef.current) {
@@ -287,107 +556,142 @@ export function Whiteboard({
       return;
     }
 
-    const intervalTime = isSplitViewEnabled ? 3000 : (isScreenSharing || isWebcamActive ? 1500 : 3000);
-    
+    let lastWbSignature = '';
+    let lastSentTimestamp = 0;
+    let isTickBusy = false;
+
     unifiedVisionIntervalRef.current = window.setInterval(async () => {
+      if (isTickBusy) return;
       const ws = directVisionWsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
+      const now = Date.now();
+      const hasPlayingSlideVideo = Boolean(mediaRef.current?.hasPlayingVideo());
+      const forceImmediate = forceImmediateVisionFrameRef.current;
+
+      // Dynamic cadence: 1000ms (1 FPS) when a slide video is playing or forced; 2000ms for screen/webcam; 3000ms for static board
+      const targetCadenceMs = forceImmediate
+        ? 0
+        : hasPlayingSlideVideo
+          ? 1000
+          : isScreenSharing || isWebcamActive
+            ? 2000
+            : 3000;
+
+      if (now - lastSentTimestamp < targetCadenceMs) return;
+
+      isTickBusy = true;
       try {
+        if (forceImmediate) {
+          forceImmediateVisionFrameRef.current = false;
+        }
+
         const masterCanvas = document.createElement('canvas');
-        masterCanvas.width = 1920;
-        masterCanvas.height = 1080;
+        masterCanvas.width = 1280;
+        masterCanvas.height = 720;
         const ctx = masterCanvas.getContext('2d');
         if (!ctx) return;
 
         if (isSplitViewEnabled) {
-          // ── Split-View Mode: Parallel Multi-Vision ──
-          const wbCanvas = await html2canvas(document.body, { 
-            scale: 0.8, 
-            useCORS: true, 
-            logging: false, 
-            ignoreElements: (e) => e.classList.contains('no-vision') 
-          });
-          
+          // ── Split-View Mode: Parallel Multi-Vision (1280x720) ──
+          const wbCanvas = await captureCompositeWhiteboardStage(forceImmediate);
           ctx.fillStyle = '#0f0f1b';
-          ctx.fillRect(0, 0, 1920, 1080);
-          
+          ctx.fillRect(0, 0, 1280, 720);
+
           const hasScreen = isScreenSharing && screenVideoRef.current && screenVideoRef.current.videoWidth > 0;
           const hasWebcam = isWebcamActive && webcamVideoRef.current && webcamVideoRef.current.videoWidth > 0;
 
           if (hasScreen && hasWebcam) {
-            // Whiteboard left half (960x1080)
-            ctx.drawImage(wbCanvas, 0, 0, 960, 1080);
-            // Screen top right (960x540)
-            ctx.drawImage(screenVideoRef.current!, 960, 0, 960, 540);
-            // Webcam bottom right (960x540)
-            ctx.drawImage(webcamVideoRef.current!, 960, 540, 960, 540);
+            if (wbCanvas) ctx.drawImage(wbCanvas, 0, 0, 640, 720);
+            ctx.drawImage(screenVideoRef.current!, 640, 0, 640, 360);
+            ctx.drawImage(webcamVideoRef.current!, 640, 360, 640, 360);
 
-            // Badges
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.font = 'bold 22px sans-serif';
+            ctx.font = 'bold 16px sans-serif';
             ctx.fillStyle = '#4ECDC4';
-            ctx.fillText('📋 Whiteboard Tab', 20, 40);
+            ctx.fillText('📋 Whiteboard Tab', 16, 28);
             ctx.fillStyle = '#FF6B6B';
-            ctx.fillText('🖥️ Screen Share', 980, 40);
+            ctx.fillText('🖥️ Screen Share', 656, 28);
             ctx.fillStyle = '#A8FF78';
-            ctx.fillText('📷 Webcam', 980, 580);
-
+            ctx.fillText('📷 Webcam', 656, 388);
           } else if (hasScreen) {
-            // Whiteboard left (960x1080), Screen right (960x1080)
-            ctx.drawImage(wbCanvas, 0, 0, 960, 1080);
-            ctx.drawImage(screenVideoRef.current!, 960, 0, 960, 1080);
+            if (wbCanvas) ctx.drawImage(wbCanvas, 0, 0, 640, 720);
+            ctx.drawImage(screenVideoRef.current!, 640, 0, 640, 720);
 
-            ctx.font = 'bold 24px sans-serif';
+            ctx.font = 'bold 18px sans-serif';
             ctx.fillStyle = '#4ECDC4';
-            ctx.fillText('📋 Whiteboard Tab', 20, 40);
+            ctx.fillText('📋 Whiteboard Tab', 16, 30);
             ctx.fillStyle = '#FF6B6B';
-            ctx.fillText('🖥️ Screen Share', 980, 40);
-
+            ctx.fillText('🖥️ Screen Share', 656, 30);
           } else if (hasWebcam) {
-            // Whiteboard left (960x1080), Webcam right (960x1080)
-            ctx.drawImage(wbCanvas, 0, 0, 960, 1080);
-            ctx.drawImage(webcamVideoRef.current!, 960, 0, 960, 1080);
+            if (wbCanvas) ctx.drawImage(wbCanvas, 0, 0, 640, 720);
+            ctx.drawImage(webcamVideoRef.current!, 640, 0, 640, 720);
 
-            ctx.font = 'bold 24px sans-serif';
+            ctx.font = 'bold 18px sans-serif';
             ctx.fillStyle = '#4ECDC4';
-            ctx.fillText('📋 Whiteboard Tab', 20, 40);
+            ctx.fillText('📋 Whiteboard Tab', 16, 30);
             ctx.fillStyle = '#A8FF78';
-            ctx.fillText('📷 Webcam', 980, 40);
-
-          } else {
-            // Only Whiteboard full screen
-            ctx.drawImage(wbCanvas, 0, 0, 1920, 1080);
+            ctx.fillText('📷 Webcam', 656, 30);
+          } else if (wbCanvas) {
+            ctx.drawImage(wbCanvas, 0, 0, 1280, 720);
           }
-          
-          ws.send(JSON.stringify({ image: masterCanvas.toDataURL('image/jpeg', 0.7) }));
 
+          ws.send(
+            JSON.stringify({
+              image: masterCanvas.toDataURL('image/jpeg', 0.74),
+              hasActiveVideo: hasPlayingSlideVideo,
+              force: forceImmediate,
+            })
+          );
+          lastSentTimestamp = now;
         } else {
-          // ── Single Focus Mode (Exclusive high-resolution) ──
+          // ── Single Focus Mode (Optimal 1280x720 max resolution) ──
           if (isScreenSharing && screenVideoRef.current && screenVideoRef.current.videoWidth > 0) {
-            masterCanvas.width = screenVideoRef.current.videoWidth;
-            masterCanvas.height = screenVideoRef.current.videoHeight;
+            const vidW = screenVideoRef.current.videoWidth;
+            const vidH = screenVideoRef.current.videoHeight;
+            const scale = Math.min(1, 1280 / vidW, 720 / vidH);
+            masterCanvas.width = Math.max(1, Math.round(vidW * scale));
+            masterCanvas.height = Math.max(1, Math.round(vidH * scale));
             ctx.drawImage(screenVideoRef.current, 0, 0, masterCanvas.width, masterCanvas.height);
-            ws.send(JSON.stringify({ image: masterCanvas.toDataURL('image/jpeg', 0.85) }));
+            ws.send(JSON.stringify({ image: masterCanvas.toDataURL('image/jpeg', 0.78), hasActiveVideo: true }));
+            lastSentTimestamp = now;
           } else if (isWebcamActive && webcamVideoRef.current && webcamVideoRef.current.videoWidth > 0) {
-            masterCanvas.width = webcamVideoRef.current.videoWidth;
-            masterCanvas.height = webcamVideoRef.current.videoHeight;
+            const vidW = webcamVideoRef.current.videoWidth;
+            const vidH = webcamVideoRef.current.videoHeight;
+            const scale = Math.min(1, 1280 / vidW, 720 / vidH);
+            masterCanvas.width = Math.max(1, Math.round(vidW * scale));
+            masterCanvas.height = Math.max(1, Math.round(vidH * scale));
             ctx.drawImage(webcamVideoRef.current, 0, 0, masterCanvas.width, masterCanvas.height);
-            ws.send(JSON.stringify({ image: masterCanvas.toDataURL('image/jpeg', 0.85) }));
+            ws.send(JSON.stringify({ image: masterCanvas.toDataURL('image/jpeg', 0.78), hasActiveVideo: true }));
+            lastSentTimestamp = now;
           } else {
-            const wbCanvas = await html2canvas(document.body, { 
-              scale: 0.8, 
-              useCORS: true, 
-              logging: false, 
-              ignoreElements: (e) => e.classList.contains('no-vision') 
-            });
-            ws.send(JSON.stringify({ image: wbCanvas.toDataURL('image/jpeg', 0.65) }));
+            const eng = engineRef.current;
+            const shapesCount = eng ? eng.getDrawnShapes().length : 0;
+            const hwCount = eng ? eng.getDrawnHandwriting().length : 0;
+            const mediaCount = mediaRef.current ? mediaRef.current.getItems().length : 0;
+            const currSig = `${activePageIndexRef.current}:${shapesCount}:${hwCount}:${mediaCount}:${Math.round(transformRef.current.zoom * 100)}:${Math.round(transformRef.current.pan.x)}:${Math.round(transformRef.current.pan.y)}`;
+            if (!hasPlayingSlideVideo && !forceImmediate && currSig === lastWbSignature && now - lastSentTimestamp < 15000) {
+              return;
+            }
+            lastWbSignature = currSig;
+            const wbCanvas = await captureCompositeWhiteboardStage(forceImmediate);
+            if (wbCanvas) {
+              ws.send(
+                JSON.stringify({
+                  image: wbCanvas.toDataURL('image/jpeg', hasPlayingSlideVideo || mediaCount > 0 ? 0.76 : 0.68),
+                  hasActiveVideo: hasPlayingSlideVideo,
+                  force: forceImmediate,
+                })
+              );
+              lastSentTimestamp = now;
+            }
           }
         }
-      } catch (e) {
+      } catch {
         // Silent catch
+      } finally {
+        isTickBusy = false;
       }
-    }, intervalTime);
+    }, 1000);
 
     return () => {
       if (unifiedVisionIntervalRef.current) {
@@ -395,7 +699,7 @@ export function Whiteboard({
         unifiedVisionIntervalRef.current = null;
       }
     };
-  }, [isSplitViewEnabled, isScreenSharing, isWebcamActive, wsConnected]);
+  }, [isSplitViewEnabled, isScreenSharing, isWebcamActive, wsConnected, captureCompositeWhiteboardStage]);
 
   // Screen Share Toggle
   const handleToggleScreenShare = async () => {
@@ -504,6 +808,11 @@ export function Whiteboard({
         const firstMath = currentShapes.find((s) => s.shapeType === 'math');
         if (firstMath?.options?.latex) {
           autoTitle = firstMath.options.latex.slice(0, 35);
+        } else {
+          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+          if (firstMedia?.options?.media?.fileName) {
+            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          }
         }
       }
     }
@@ -598,6 +907,36 @@ export function Whiteboard({
                 toY: s.toY,
                 label: s.options?.label,
               })),
+            mediaItems: (() => {
+              const runtimeMap = new Map(
+                (mediaRef.current?.getRuntimeStates() || []).map((rt) => [rt.id, rt])
+              );
+              return (activePage?.shapes || [])
+                .filter((s) => s.shapeType === 'image' || s.shapeType === 'video')
+                .map((s) => {
+                  const m = s.options?.media;
+                  const rt = s.id ? runtimeMap.get(s.id) : undefined;
+                  return {
+                    id: s.id,
+                    mediaId: rt?.mediaId || m?.mediaId || s.id || '',
+                    mediaType: s.shapeType as 'image' | 'video',
+                    fileName: rt?.fileName || m?.fileName || s.options?.label || s.shapeType,
+                    mimeType:
+                      rt?.mimeType ||
+                      m?.mimeType ||
+                      (s.shapeType === 'video' ? 'video/mp4' : 'image/png'),
+                    url: rt?.url || m?.url || '',
+                    x: rt?.x ?? s.x,
+                    y: rt?.y ?? s.y,
+                    width: rt?.width ?? s.width ?? 480,
+                    height: rt?.height ?? s.height ?? 320,
+                    durationSec: rt?.durationSec ?? m?.durationSec ?? 0,
+                    currentTimeSec: rt?.currentTimeSec ?? 0,
+                    isPlaying: Boolean(rt?.isPlaying),
+                    shareAudioWithAI: rt?.shareAudioWithAI ?? (m?.shareAudioWithAI !== false),
+                  };
+                });
+            })(),
           },
           allSlidesSummary: allPages.map((p, idx) => ({
             pageNumber: p.pageNumber || idx + 1,
@@ -605,6 +944,14 @@ export function Whiteboard({
             hasEquations: (p.shapes || []).some((s) => s.shapeType === 'math'),
             has2DGraph: (p.shapes || []).some((s) => s.shapeType === 'graph'),
             has3DGraph: (p.shapes || []).some((s) => s.shapeType === 'graph3d'),
+            hasMedia: (p.shapes || []).some((s) => s.shapeType === 'image' || s.shapeType === 'video'),
+            mediaSummary: (p.shapes || [])
+              .filter((s) => s.shapeType === 'image' || s.shapeType === 'video')
+              .map(
+                (s) =>
+                  `${s.shapeType}: ${s.options?.media?.fileName || s.options?.label || s.shapeType}`
+              )
+              .slice(0, 4),
             equationsSummary: (p.shapes || [])
               .filter((s) => s.shapeType === 'math')
               .map((s) => s.options?.latex)
@@ -653,6 +1000,11 @@ export function Whiteboard({
         const firstMath = currentShapes.find((s) => s.shapeType === 'math');
         if (firstMath?.options?.latex) {
           autoTitle = firstMath.options.latex.slice(0, 35);
+        } else {
+          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+          if (firstMedia?.options?.media?.fileName) {
+            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          }
         }
       }
     }
@@ -669,18 +1021,28 @@ export function Whiteboard({
       return p;
     });
 
+    // Synchronously update page refs first so concurrent callbacks see target state immediately
+    pagesRef.current = updatedPages;
+    activePageIndexRef.current = targetIndex;
     setPages(updatedPages);
     setActivePageIndex(targetIndex);
+
+    isSwitchingSlideRef.current = true;
+    if (liveBoardSyncTimerRef.current) {
+      clearTimeout(liveBoardSyncTimerRef.current);
+      liveBoardSyncTimerRef.current = null;
+    }
 
     const targetPage = updatedPages[targetIndex];
     if (targetPage) {
       engine.loadBoard(targetPage.shapes || [], targetPage.handwriting || []);
     }
+    isSwitchingSlideRef.current = false;
 
     broadcastBoardStateSync(updatedPages, targetIndex);
   }, [broadcastBoardStateSync]);
 
-  const addNewPage = useCallback(() => {
+  const addNewPage = useCallback((customTitle?: string) => {
     const engine = engineRef.current;
     if (!engine) return;
 
@@ -699,6 +1061,11 @@ export function Whiteboard({
         const firstMath = currentShapes.find((s) => s.shapeType === 'math');
         if (firstMath?.options?.latex) {
           autoTitle = firstMath.options.latex.slice(0, 35);
+        } else {
+          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+          if (firstMedia?.options?.media?.fileName) {
+            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          }
         }
       }
     }
@@ -716,10 +1083,11 @@ export function Whiteboard({
     });
 
     const newPageNum = updatedPages.length + 1;
+    const finalTitle = customTitle && customTitle.trim() ? customTitle.trim() : `Slide ${newPageNum}`;
     const newPage: WhiteboardPage = {
       id: `page-${Date.now()}`,
       pageNumber: newPageNum,
-      title: `Slide ${newPageNum}`,
+      title: finalTitle,
       shapes: [],
       handwriting: [],
       createdAt: Date.now(),
@@ -728,9 +1096,20 @@ export function Whiteboard({
     const nextPages = [...updatedPages, newPage];
     const newIndex = nextPages.length - 1;
 
+    // Immediately update refs synchronously so any subsequent callbacks or engine hooks see the new deck
+    pagesRef.current = nextPages;
+    activePageIndexRef.current = newIndex;
     setPages(nextPages);
     setActivePageIndex(newIndex);
+
+    // Suppress live thumbnail auto-sync during page wipe to avoid race conditions
+    isSwitchingSlideRef.current = true;
+    if (liveBoardSyncTimerRef.current) {
+      clearTimeout(liveBoardSyncTimerRef.current);
+      liveBoardSyncTimerRef.current = null;
+    }
     engine.clear();
+    isSwitchingSlideRef.current = false;
 
     broadcastBoardStateSync(nextPages, newIndex);
   }, [broadcastBoardStateSync]);
@@ -749,67 +1128,209 @@ export function Whiteboard({
       nextActiveIndex = activePageIndexRef.current - 1;
     }
 
+    pagesRef.current = renumbered;
+    activePageIndexRef.current = nextActiveIndex;
     setPages(renumbered);
     setActivePageIndex(nextActiveIndex);
+
+    isSwitchingSlideRef.current = true;
+    if (liveBoardSyncTimerRef.current) {
+      clearTimeout(liveBoardSyncTimerRef.current);
+      liveBoardSyncTimerRef.current = null;
+    }
 
     if (engine && renumbered[nextActiveIndex]) {
       engine.loadBoard(renumbered[nextActiveIndex].shapes || [], renumbered[nextActiveIndex].handwriting || []);
     }
+    isSwitchingSlideRef.current = false;
 
     broadcastBoardStateSync(renumbered, nextActiveIndex);
   }, [broadcastBoardStateSync]);
 
-  // --- Session & File Management Handlers ---
-  const saveRecentSession = useCallback((title: string, pagesToSave: WhiteboardPage[], activeIdx: number) => {
-    try {
-      const newRecent: RecentSession = {
-        id: `session-${Date.now()}`,
-        name: title || 'Untitled Session',
-        timestamp: Date.now(),
-        slideCount: pagesToSave.length,
-        data: {
-          title: title || 'Untitled Session',
-          activePageIndex: activeIdx,
-          pages: pagesToSave,
-        },
-      };
+  // --- Live Slide Thumbnail Sync (PowerPoint Sorter) ---
+  const liveBoardSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLiveBoardSyncTsRef = useRef<number>(0);
 
-      setRecentSessions((prev) => {
-        const filtered = prev.filter((s) => s.name !== newRecent.name);
-        const updated = [newRecent, ...filtered].slice(0, 10);
-        localStorage.setItem('AI_TUTOR_RECENT_SESSIONS', JSON.stringify(updated));
-        return updated;
-      });
-    } catch (err) {
-      console.error('Error saving recent session to localStorage:', err);
+  const flushLiveSlideSync = useCallback(() => {
+    if (isSwitchingSlideRef.current) return;
+    liveBoardSyncTimerRef.current = null;
+    lastLiveBoardSyncTsRef.current = Date.now();
+    const synced = getCurrentSyncedPages();
+    pagesRef.current = synced;
+    setPages(synced);
+  }, [getCurrentSyncedPages]);
+
+  const scheduleLiveSlideSync = useCallback(() => {
+    if (isSwitchingSlideRef.current) return;
+    const elapsed = Date.now() - lastLiveBoardSyncTsRef.current;
+    if (elapsed >= 220) {
+      if (liveBoardSyncTimerRef.current) {
+        clearTimeout(liveBoardSyncTimerRef.current);
+        liveBoardSyncTimerRef.current = null;
+      }
+      flushLiveSlideSync();
+      return;
     }
+    if (!liveBoardSyncTimerRef.current) {
+      liveBoardSyncTimerRef.current = setTimeout(flushLiveSlideSync, 220 - elapsed);
+    }
+  }, [flushLiveSlideSync]);
+
+  useEffect(() => {
+    return () => {
+      if (liveBoardSyncTimerRef.current) {
+        clearTimeout(liveBoardSyncTimerRef.current);
+      }
+    };
   }, []);
 
-  const handleNewFile = useCallback(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
+  // --- Session & Continuous Dual-Tier Auto-Save Handlers ---
+  const buildSessionSnapshot = useCallback(
+    (overrideTitle?: string, overridePages?: WhiteboardPage[], overrideActiveIdx?: number): SavedTutorSession => {
+      const freshPages = overridePages ?? getCurrentSyncedPages();
+      const baseTitle = overrideTitle ?? sessionTitleRef.current;
+      const smart = deriveSmartSessionTitle(
+        baseTitle,
+        overrideTitle ? false : isAutoTitledRef.current,
+        freshPages,
+        chatMessagesRef.current
+      );
+      return {
+        version: '2.0',
+        appName: 'AI_Tutor_Whiteboard',
+        id: sessionIdRef.current,
+        title: smart.title,
+        isAutoTitled: smart.isAutoTitled,
+        createdAt: sessionCreatedAtRef.current,
+        updatedAt: Date.now(),
+        activePageIndex: overrideActiveIdx ?? activePageIndexRef.current,
+        pages: freshPages,
+        chatMessages: chatMessagesRef.current,
+      };
+    },
+    [getCurrentSyncedPages]
+  );
 
-    if (pagesRef.current.length > 1 || engine.getDrawnShapes().length > 0 || engine.getDrawnHandwriting().length > 0) {
-      if (!window.confirm('Create a new whiteboard? Any unsaved changes in the current session will be cleared.')) {
-        return;
+  const upsertRecentFromSummary = useCallback((summary: SavedSessionSummary) => {
+    setRecentSessions((prev) => {
+      const entry: RecentSession = {
+        id: summary.id,
+        name: summary.title || DEFAULT_WHITEBOARD_TITLE,
+        timestamp: summary.updatedAt,
+        slideCount: summary.slideCount || 1,
+        messageCount: summary.messageCount || 0,
+      };
+      const filtered = prev.filter((s) => s.id !== summary.id);
+      const updated = [entry, ...filtered].slice(0, 40);
+      try {
+        localStorage.setItem('AI_TUTOR_RECENT_SESSIONS', JSON.stringify(updated.slice(0, 15)));
+      } catch {
+        // ignore quota errors; OS disk + IndexedDB are primary
       }
-    }
+      return updated;
+    });
+  }, []);
 
-    engine.clear();
-    currentFileHandleRef.current = null;
-    const freshPage: WhiteboardPage = {
-      id: `page-${Date.now()}`,
-      pageNumber: 1,
-      title: 'Whiteboard Slide 1',
-      shapes: [],
-      handwriting: [],
-      createdAt: Date.now(),
+  const saveRecentSession = useCallback(
+    (title: string, pagesToSave: WhiteboardPage[], activeIdx: number) => {
+      const snapshot = buildSessionSnapshot(title, pagesToSave, activeIdx);
+      void persistSessionDualTier(snapshot, { setActive: true }).then((summary) => {
+        setLastAutoSavedAt(summary.updatedAt);
+        setAutoSaveState('saved');
+        upsertRecentFromSummary(summary);
+      });
+    },
+    [buildSessionSnapshot, upsertRecentFromSummary]
+  );
+
+  // Hydrate latest auto-saved session (slides + full chat conversation) on boot
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateFromVault = async () => {
+      try {
+        const [latest, allSummaries] = await Promise.all([
+          loadLatestAutoSavedSession(),
+          listAllSavedSessions(),
+        ]);
+        if (cancelled) return;
+
+        // Populate past sessions in the history/vault drawer so they are readily accessible at any time
+        if (allSummaries.length > 0) {
+          setRecentSessions((prev) => mergeVaultSummariesWithRecent(allSummaries, prev));
+        }
+
+        // On initial app launch, start cleanly with a fresh blank canvas as requested,
+        // leaving past sessions safely preserved in the history vault.
+        const freshId = createSessionId();
+        sessionIdRef.current = freshId;
+        setActiveSessionId(freshId);
+        sessionCreatedAtRef.current = Date.now();
+        isAutoTitledRef.current = true;
+        setSessionTitle(DEFAULT_WHITEBOARD_TITLE);
+        setAutoSaveState('saved');
+      } catch (err) {
+        console.warn('[AutoSave] Initial session hydration warning:', err);
+      } finally {
+        if (!cancelled) {
+          autoSaveHydratedRef.current = true;
+        }
+      }
     };
-    setPages([freshPage]);
-    setActivePageIndex(0);
-    setSessionTitle('Untitled Whiteboard');
-    broadcastBoardStateSync([freshPage], 0, 'Untitled Whiteboard');
-  }, [broadcastBoardStateSync]);
+
+    void hydrateFromVault();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Continuous debounced Auto-Save whenever slides, drawings, or chat messages change
+  useEffect(() => {
+    if (!autoSaveHydratedRef.current) return;
+    const syncedPages = getCurrentSyncedPages();
+    if (!hasSubstantiveSessionContent(syncedPages, chatMessages)) return;
+
+    setAutoSaveState('saving');
+    const timer = setTimeout(async () => {
+      try {
+        const snapshot = buildSessionSnapshot();
+        if (snapshot.title !== sessionTitleRef.current) {
+          setSessionTitle(snapshot.title);
+        }
+        const summary = await persistSessionDualTier(snapshot, { setActive: true });
+        setLastAutoSavedAt(summary.updatedAt);
+        setAutoSaveState('saved');
+        upsertRecentFromSummary(summary);
+      } catch {
+        setAutoSaveState('error');
+      }
+    }, 1100);
+
+    return () => clearTimeout(timer);
+  }, [pages, chatMessages, activePageIndex, sessionTitle, getCurrentSyncedPages, buildSessionSnapshot, upsertRecentFromSummary]);
+
+  // Emergency W3C Page-Lifecycle flush on tab close / hide / reload (zero data loss)
+  useEffect(() => {
+    const emergencyFlush = () => {
+      if (!autoSaveHydratedRef.current) return;
+      const freshPages = getCurrentSyncedPages();
+      if (!hasSubstantiveSessionContent(freshPages, chatMessagesRef.current)) return;
+      const snapshot = buildSessionSnapshot(undefined, freshPages);
+      flushSessionEmergencyOnExit(snapshot);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        emergencyFlush();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', emergencyFlush);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', emergencyFlush);
+    };
+  }, [getCurrentSyncedPages, buildSessionSnapshot]);
 
   const currentFileHandleRef = useRef<any>(null);
   const [saveToast, setSaveToast] = useState<string | null>(null);
@@ -820,6 +1341,39 @@ export function Whiteboard({
       setSaveToast((prev) => (prev === msg ? null : prev));
     }, 2500);
   }, []);
+
+  const handleNewFile = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    // Auto-archive current session into the vault before starting fresh so zero work is ever lost
+    const currentSynced = getCurrentSyncedPages();
+    const hadContent = hasSubstantiveSessionContent(currentSynced, chatMessagesRef.current);
+    if (hadContent) {
+      const archiveSnapshot = buildSessionSnapshot(undefined, currentSynced);
+      void persistSessionDualTier(archiveSnapshot, { setActive: false }).then((summary) => {
+        upsertRecentFromSummary(summary);
+      });
+    }
+
+    const nextId = createSessionId();
+    sessionIdRef.current = nextId;
+    setActiveSessionId(nextId);
+    sessionCreatedAtRef.current = Date.now();
+    isAutoTitledRef.current = true;
+    currentFileHandleRef.current = null;
+
+    engine.clear();
+    const freshPage = createBlankWhiteboardPage();
+    setPages([freshPage]);
+    setActivePageIndex(0);
+    setChatMessages([]);
+    setSessionTitle(DEFAULT_WHITEBOARD_TITLE);
+    broadcastBoardStateSync([freshPage], 0, DEFAULT_WHITEBOARD_TITLE);
+    if (hadContent) {
+      showToast('✨ New session started (previous session auto-saved)');
+    }
+  }, [getCurrentSyncedPages, buildSessionSnapshot, upsertRecentFromSummary, broadcastBoardStateSync, showToast]);
 
   const handleSaveAs = useCallback(async () => {
     const syncedPages = getCurrentSyncedPages();
@@ -841,16 +1395,19 @@ export function Whiteboard({
         if (!fileHandle) return;
 
         const newTitle = fileHandle.name.replace(/\.(aitutor|json)$/i, '');
+        isAutoTitledRef.current = false;
         setSessionTitle(newTitle);
         currentFileHandleRef.current = fileHandle;
 
         const projectData = {
-          version: '1.0',
+          version: '2.0',
           appName: 'AI_Tutor_Whiteboard',
+          id: sessionIdRef.current,
           timestamp: Date.now(),
           title: newTitle,
           activePageIndex: activePageIndexRef.current,
           pages: syncedPages,
+          chatMessages: chatMessagesRef.current,
         };
 
         const writable = await fileHandle.createWritable();
@@ -870,16 +1427,19 @@ export function Whiteboard({
 
     // Fallback for browsers without File System Access API
     const newName = window.prompt('Enter project name to save as:', cleanName) || cleanName;
+    isAutoTitledRef.current = false;
     setSessionTitle(newName);
     saveRecentSession(newName, syncedPages, activePageIndexRef.current);
 
     const projectData = {
-      version: '1.0',
+      version: '2.0',
       appName: 'AI_Tutor_Whiteboard',
+      id: sessionIdRef.current,
       timestamp: Date.now(),
       title: newName,
       activePageIndex: activePageIndexRef.current,
       pages: syncedPages,
+      chatMessages: chatMessagesRef.current,
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -895,18 +1455,24 @@ export function Whiteboard({
   const handleSave = useCallback(async () => {
     const syncedPages = getCurrentSyncedPages();
     setPages(syncedPages);
-    saveRecentSession(sessionTitle, syncedPages, activePageIndexRef.current);
+    const snapshot = buildSessionSnapshot(undefined, syncedPages);
+    const summary = await persistSessionDualTier(snapshot, { setActive: true });
+    setLastAutoSavedAt(summary.updatedAt);
+    setAutoSaveState('saved');
+    upsertRecentFromSummary(summary);
 
     const projectData = {
-      version: '1.0',
+      version: '2.0',
       appName: 'AI_Tutor_Whiteboard',
+      id: sessionIdRef.current,
       timestamp: Date.now(),
-      title: sessionTitle || 'Untitled Whiteboard',
+      title: snapshot.title || 'Untitled Whiteboard',
       activePageIndex: activePageIndexRef.current,
       pages: syncedPages,
+      chatMessages: chatMessagesRef.current,
     };
 
-    // If an existing file on disk is active, write directly to that disk file!
+    // If an existing external file handle is active, also write directly to it
     if (currentFileHandleRef.current) {
       try {
         const writable = await currentFileHandleRef.current.createWritable();
@@ -915,33 +1481,53 @@ export function Whiteboard({
         showToast(`✓ Saved to "${currentFileHandleRef.current.name}"`);
         return;
       } catch (err) {
-        console.warn('Could not write to file handle, opening Save As picker:', err);
+        console.warn('Could not write to external file handle:', err);
       }
     }
 
-    // Otherwise prompt user with Save As dialog
-    await handleSaveAs();
-  }, [getCurrentSyncedPages, saveRecentSession, sessionTitle, showToast, handleSaveAs]);
+    showToast(`✓ Session saved ("${snapshot.title}")`);
+  }, [getCurrentSyncedPages, buildSessionSnapshot, upsertRecentFromSummary, showToast]);
 
-  const handleOpenFile = useCallback((data: { title?: string; pages: WhiteboardPage[]; activePageIndex?: number }) => {
-    const engine = engineRef.current;
-    if (!engine || !data.pages || data.pages.length === 0) return;
+  const handleOpenFile = useCallback(
+    (data: {
+      id?: string;
+      title?: string;
+      pages: WhiteboardPage[];
+      activePageIndex?: number;
+      chatMessages?: ChatMessage[];
+      createdAt?: number;
+      isAutoTitled?: boolean;
+    }) => {
+      const engine = engineRef.current;
+      if (!engine || !data.pages || data.pages.length === 0) return;
 
-    setPages(data.pages);
-    const targetIdx = data.activePageIndex ?? 0;
-    const safeIdx = Math.max(0, Math.min(data.pages.length - 1, targetIdx));
-    setActivePageIndex(safeIdx);
-    const newTitle = data.title || data.pages[0]?.title || 'Loaded Whiteboard';
-    setSessionTitle(newTitle);
+      const nextId = data.id || createSessionId();
+      sessionIdRef.current = nextId;
+      setActiveSessionId(nextId);
+      sessionCreatedAtRef.current = data.createdAt || Date.now();
+      isAutoTitledRef.current = Boolean(data.isAutoTitled);
 
-    const targetPage = data.pages[safeIdx];
-    if (targetPage) {
-      engine.loadBoard(targetPage.shapes || [], targetPage.handwriting || []);
-    }
+      setPages(data.pages);
+      const targetIdx = data.activePageIndex ?? 0;
+      const safeIdx = Math.max(0, Math.min(data.pages.length - 1, targetIdx));
+      setActivePageIndex(safeIdx);
+      const newTitle = data.title || data.pages[0]?.title || 'Loaded Whiteboard';
+      setSessionTitle(newTitle);
 
-    saveRecentSession(newTitle, data.pages, safeIdx);
-    broadcastBoardStateSync(data.pages, safeIdx, newTitle);
-  }, [saveRecentSession, broadcastBoardStateSync]);
+      const loadedMessages = Array.isArray(data.chatMessages) ? data.chatMessages : [];
+      setChatMessages(loadedMessages);
+      chatMessagesRef.current = loadedMessages;
+
+      const targetPage = data.pages[safeIdx];
+      if (targetPage) {
+        engine.loadBoard(targetPage.shapes || [], targetPage.handwriting || []);
+      }
+
+      saveRecentSession(newTitle, data.pages, safeIdx);
+      broadcastBoardStateSync(data.pages, safeIdx, newTitle);
+    },
+    [saveRecentSession, broadcastBoardStateSync]
+  );
 
   const handleOpenPicker = useCallback(async () => {
     if ('showOpenFilePicker' in window) {
@@ -962,7 +1548,7 @@ export function Whiteboard({
         if (parsed.pages && Array.isArray(parsed.pages)) {
           currentFileHandleRef.current = fileHandle;
           const cleanTitle = fileHandle.name.replace(/\.(aitutor|json)$/i, '');
-          handleOpenFile({ ...parsed, title: cleanTitle });
+          handleOpenFile({ ...parsed, title: parsed.title || cleanTitle });
           showToast(`✓ Opened "${fileHandle.name}"`);
         }
       } catch (err: any) {
@@ -973,16 +1559,36 @@ export function Whiteboard({
     }
   }, [handleOpenFile, showToast]);
 
-  const handleLoadRecent = useCallback((session: RecentSession) => {
-    if (session.data) {
-      handleOpenFile(session.data);
-    }
-  }, [handleOpenFile]);
+  const handleLoadRecent = useCallback(
+    async (session: RecentSession) => {
+      const fullVaultSession = await loadSpecificSavedSession(session.id);
+      if (fullVaultSession && Array.isArray(fullVaultSession.pages)) {
+        handleOpenFile(fullVaultSession);
+        showToast(`✓ Loaded "${fullVaultSession.title}"`);
+        return;
+      }
+      if (session.data) {
+        handleOpenFile({ ...session.data, id: session.id });
+        showToast(`✓ Loaded "${session.name}"`);
+      }
+    },
+    [handleOpenFile, showToast]
+  );
 
   const handleDeleteRecent = useCallback((id: string) => {
+    void deleteSavedSessionEverywhere(id);
+    if (sessionIdRef.current === id) {
+      const freshId = createSessionId();
+      sessionIdRef.current = freshId;
+      setActiveSessionId(freshId);
+    }
     setRecentSessions((prev) => {
       const updated = prev.filter((s) => s.id !== id);
-      localStorage.setItem('AI_TUTOR_RECENT_SESSIONS', JSON.stringify(updated));
+      try {
+        localStorage.setItem('AI_TUTOR_RECENT_SESSIONS', JSON.stringify(updated.slice(0, 15)));
+      } catch {
+        // ignore
+      }
       return updated;
     });
   }, []);
@@ -998,14 +1604,15 @@ export function Whiteboard({
       const syncedPages = getCurrentSyncedPages();
       setPages(syncedPages);
 
-      const canvas = await html2canvas(viewportEl, {
-        backgroundColor: '#131324',
+      const overlayCanvas = await html2canvas(viewportEl, {
+        backgroundColor: null,
         width: VIRTUAL_WIDTH,
         height: VIRTUAL_HEIGHT,
         scale: 2, // 2x ultra high resolution
         useCORS: true,
         allowTaint: true,
         logging: false,
+        ignoreElements: (e) => e.classList.contains('slide-media-overlay') || e.classList.contains('no-vision'),
         onclone: (clonedDoc) => {
           const clonedViewport = clonedDoc.querySelector('.whiteboard-viewport') as HTMLElement;
           if (clonedViewport) {
@@ -1013,6 +1620,22 @@ export function Whiteboard({
           }
         },
       });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = VIRTUAL_WIDTH * 2;
+      canvas.height = VIRTUAL_HEIGHT * 2;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#131324';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (mediaRef.current) {
+          ctx.save();
+          ctx.scale(2, 2);
+          mediaRef.current.drawMediaToCanvas(ctx);
+          ctx.restore();
+        }
+        ctx.drawImage(overlayCanvas, 0, 0, canvas.width, canvas.height);
+      }
 
       const dataUrl = canvas.toDataURL('image/png', 1.0);
       const a = document.createElement('a');
@@ -1114,7 +1737,137 @@ export function Whiteboard({
     }
   }, [room, room?.state, broadcastBoardStateSync]);
 
-  // Initialize Sync Engine
+  // --- Live Writing Auto-Follow Camera Controller ---
+  const startAutoFollowGlide = useCallback((desiredPanX: number, desiredPanY: number) => {
+    autoFollowTargetPanRef.current = { x: desiredPanX, y: desiredPanY };
+    if (autoFollowRafRef.current !== null) return;
+
+    let prevTs = performance.now();
+    const tick = (nowTs: number) => {
+      const targetPan = autoFollowTargetPanRef.current;
+      if (
+        !targetPan ||
+        !isAutoFollowRef.current ||
+        (Number.isFinite(lastManualCameraMoveRef.current) && nowTs - lastManualCameraMoveRef.current < 1500)
+      ) {
+        autoFollowRafRef.current = null;
+        autoFollowTargetPanRef.current = null;
+        return;
+      }
+
+      const dt = (nowTs - prevTs) / 1000;
+      prevTs = nowTs;
+
+      const step = stepAutoFollowLerp(transformRef.current.pan, targetPan, dt, 0.14);
+      transformRef.current = { zoom: transformRef.current.zoom, pan: step.pan };
+      setTransform((prev) => ({ zoom: prev.zoom, pan: step.pan }));
+
+      if (step.settled) {
+        autoFollowRafRef.current = null;
+        autoFollowTargetPanRef.current = null;
+        return;
+      }
+      autoFollowRafRef.current = requestAnimationFrame(tick);
+    };
+
+    autoFollowRafRef.current = requestAnimationFrame(tick);
+  }, []);
+
+  const handleWritingFocus = useCallback(
+    (target: WritingFocusTarget) => {
+      lastFocusTargetRef.current = target;
+      if (!isAutoFollowRef.current) return;
+      if (Number.isFinite(lastManualCameraMoveRef.current) && performance.now() - lastManualCameraMoveRef.current < 1500) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+      const cw = container.clientWidth || window.innerWidth;
+      const ch = container.clientHeight || window.innerHeight;
+      const isMobile = cw <= 768;
+
+      const insets = {
+        left: !isMobile && isChatDrawerOpenRef.current ? 390 : 16,
+        right: !isMobile && isSlidePanelOpenRef.current ? 326 : 16,
+        top: 68,
+        bottom: isToolbarPinnedRef.current ? 78 : 24,
+      };
+
+      const res = computeAutoFollowPan(target, transformRef.current, cw, ch, insets, 0.68);
+      if (res.needsPan) {
+        startAutoFollowGlide(res.desiredPanX, res.desiredPanY);
+      }
+    },
+    [startAutoFollowGlide]
+  );
+
+  const markManualCameraInteraction = useCallback(() => {
+    lastManualCameraMoveRef.current = performance.now();
+    if (manualCooldownTimerRef.current) {
+      clearTimeout(manualCooldownTimerRef.current);
+      manualCooldownTimerRef.current = null;
+    }
+    // Automatically reset cooldown after user stops panning/zooming, but NEVER force-glide
+    // back to a stale past target! Camera follow will only track NEW live strokes when the AI writes.
+    manualCooldownTimerRef.current = setTimeout(() => {
+      lastManualCameraMoveRef.current = -Infinity;
+      manualCooldownTimerRef.current = null;
+    }, 2000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoFollowRafRef.current !== null) {
+        cancelAnimationFrame(autoFollowRafRef.current);
+      }
+      if (manualCooldownTimerRef.current) {
+        clearTimeout(manualCooldownTimerRef.current);
+      }
+    };
+  }, []);
+
+  const toggleAutoFollow = useCallback(() => {
+    const next = !isAutoFollowRef.current;
+    isAutoFollowRef.current = next;
+    setIsAutoFollowEnabled(next);
+    try {
+      localStorage.setItem('AI_TUTOR_AUTO_FOLLOW', String(next));
+    } catch {
+      // ignore
+    }
+    if (!next) {
+      if (autoFollowRafRef.current !== null) {
+        cancelAnimationFrame(autoFollowRafRef.current);
+        autoFollowRafRef.current = null;
+        autoFollowTargetPanRef.current = null;
+      }
+      if (manualCooldownTimerRef.current) {
+        clearTimeout(manualCooldownTimerRef.current);
+        manualCooldownTimerRef.current = null;
+      }
+    } else {
+      lastManualCameraMoveRef.current = -Infinity;
+    }
+    showToast(
+      next
+        ? '🎯 Live Writing Auto-Follow ON — tracking active strokes'
+        : '⏸️ Live Writing Auto-Follow OFF — free manual camera'
+    );
+  }, [handleWritingFocus, showToast]);
+
+  // Stable Callback Refs for SyncEngine to guarantee permanent singleton lifecycle
+  const addNewPageRef = useRef(addNewPage);
+  addNewPageRef.current = addNewPage;
+
+  const scheduleLiveSlideSyncRef = useRef(scheduleLiveSlideSync);
+  scheduleLiveSlideSyncRef.current = scheduleLiveSlideSync;
+
+  const handleWritingFocusRef = useRef(handleWritingFocus);
+  handleWritingFocusRef.current = handleWritingFocus;
+
+  const setTelemetryRef = useRef(setTelemetry);
+  setTelemetryRef.current = setTelemetry;
+
+  // Initialize Sync Engine once on mount - lifecycle remains stable across auto-saves and re-renders
   useEffect(() => {
     const canvas = canvasRef.current;
     const svg = svgRef.current;
@@ -1129,13 +1882,17 @@ export function Whiteboard({
       graphOverlay: graphRef.current ?? undefined,
       graph3dOverlay: graph3dRef.current ?? undefined,
       vennOverlay: vennRef.current ?? undefined,
+      mediaOverlay: mediaRef.current ?? undefined,
       getMathOverlay: () => mathRef.current,
       getGraphOverlay: () => graphRef.current,
       getGraph3DOverlay: () => graph3dRef.current,
       getVennOverlay: () => vennRef.current,
+      getMediaOverlay: () => mediaRef.current,
       getWritingStyle: () => currentStyleRef.current,
-      onTelemetry: (metrics: SyncTelemetry) => setTelemetry(metrics),
-      onBoardFull: () => addNewPage(),
+      onTelemetry: (metrics: SyncTelemetry) => setTelemetryRef.current(metrics),
+      onBoardFull: () => addNewPageRef.current(),
+      onBoardChange: () => scheduleLiveSlideSyncRef.current(),
+      onWritingFocus: (target) => handleWritingFocusRef.current(target),
     });
 
     engineRef.current = engine;
@@ -1145,7 +1902,7 @@ export function Whiteboard({
       engine.dispose();
       engineRef.current = null;
     };
-  }, [setTelemetry, addNewPage]);
+  }, []);
 
   // --- Wheel Focal-Point Zoom ---
   useEffect(() => {
@@ -1160,6 +1917,7 @@ export function Whiteboard({
       }
 
       e.preventDefault();
+      markManualCameraInteraction();
       const rect = container.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
@@ -1209,6 +1967,7 @@ export function Whiteboard({
 
       if (e.touches.length === 2 && initialDist > 0) {
         e.preventDefault();
+        markManualCameraInteraction();
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const currentDist = Math.hypot(dx, dy);
@@ -1221,6 +1980,7 @@ export function Whiteboard({
           return { zoom: newZoom, pan: { x: newPanX, y: newPanY } };
         });
       } else if (e.touches.length === 1) {
+        markManualCameraInteraction();
         const dx = e.touches[0].clientX - lastTouch.x;
         const dy = e.touches[0].clientY - lastTouch.y;
         lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -1256,7 +2016,7 @@ export function Whiteboard({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     const target = e.target as HTMLElement;
-    if (target.closest('.drawing-layer, button, input, textarea, a, select, [role="button"], .interactive, .slide-card, .slide-panel, .slide-list, .word-group, .graph-3d-card, .graph-3d-overlay, .math-item, canvas, .voice-modal-backdrop, .voice-modal-container, .voice-modal-content, .voice-card, .voice-filter-chip, .voice-play-btn, .voice-fav-btn, .model-modal-backdrop, .model-modal-container, .model-modal-content, .model-card, .model-thinking-btn, .chat-drawer, .chat-messages, .file-menu-container, .floating-pip-container, .no-zoom')) {
+    if (target.closest('.drawing-layer, button, input, textarea, a, select, [role="button"], .interactive, .slide-media-card, .slide-card, .slide-panel, .slide-list, .word-group, .graph-3d-card, .graph-3d-overlay, .math-item, canvas, .voice-modal-backdrop, .voice-modal-container, .voice-modal-content, .voice-card, .voice-filter-chip, .voice-play-btn, .voice-fav-btn, .model-modal-backdrop, .model-modal-container, .model-modal-content, .model-card, .model-thinking-btn, .chat-drawer, .chat-messages, .file-menu-container, .floating-pip-container, .no-zoom')) {
       return;
     }
     if (e.button !== 0 && e.button !== 1) return;
@@ -1267,6 +2027,7 @@ export function Whiteboard({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!isDraggingRef.current) return;
+    markManualCameraInteraction();
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
@@ -1288,6 +2049,7 @@ export function Whiteboard({
   // --- Zoom Controls Helpers ---
   const zoomIn = () => {
     if (!containerRef.current) return;
+    markManualCameraInteraction();
     const rect = containerRef.current.getBoundingClientRect();
     const cx = rect.width / 2;
     const cy = rect.height / 2;
@@ -1301,6 +2063,7 @@ export function Whiteboard({
 
   const zoomOut = () => {
     if (!containerRef.current) return;
+    markManualCameraInteraction();
     const rect = containerRef.current.getBoundingClientRect();
     const cx = rect.width / 2;
     const cy = rect.height / 2;
@@ -1313,40 +2076,116 @@ export function Whiteboard({
   };
 
   const resetZoom = () => {
+    markManualCameraInteraction();
     centerViewport();
   };
 
-  // --- Undo & Redo Handlers ---
+  // --- Unified Action History (Pen Strokes, Textboxes & Engine Actions) ---
+  interface HistoryStep {
+    kind: 'user';
+    pageIndex: number;
+    previousPaths: UserDrawingPath[];
+    previousTexts: UserDrawingText[];
+    nextPaths: UserDrawingPath[];
+    nextTexts: UserDrawingText[];
+  }
+  const undoActionStackRef = useRef<HistoryStep[]>([]);
+  const redoActionStackRef = useRef<HistoryStep[]>([]);
+
+  // --- Undo & Redo Handlers (Unified across Pen, Text & AI shapes) ---
   const handleUndo = useCallback(() => {
+    const activeIdx = activePageIndexRef.current;
+    const action = undoActionStackRef.current.pop();
+
+    if (action && action.pageIndex === activeIdx) {
+      redoActionStackRef.current.push(action);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activeIdx
+            ? { ...p, userPaths: [...action.previousPaths], userTexts: [...action.previousTexts] }
+            : p
+        )
+      );
+      broadcastBoardStateSync();
+      return;
+    }
+
     const engine = engineRef.current;
-    if (!engine) return;
-    engine.undo();
-    const currentShapes = engine.getDrawnShapes();
-    const currentHandwriting = engine.getDrawnHandwriting();
-    setPages((prev) =>
-      prev.map((p, idx) =>
-        idx === activePageIndexRef.current
-          ? { ...p, shapes: [...currentShapes], handwriting: [...currentHandwriting] }
-          : p
-      )
-    );
-    broadcastBoardStateSync();
+    if (engine) {
+      const undone = engine.undo();
+      if (undone) {
+        const currentShapes = engine.getDrawnShapes();
+        const currentHandwriting = engine.getDrawnHandwriting();
+        setPages((prev) =>
+          prev.map((p, idx) =>
+            idx === activeIdx
+              ? { ...p, shapes: [...currentShapes], handwriting: [...currentHandwriting] }
+              : p
+          )
+        );
+        broadcastBoardStateSync();
+        return;
+      }
+    }
+
+    // Fallback: If user strokes exist on active slide, pop the last stroke
+    const curP = pagesRef.current[activeIdx];
+    if (curP && curP.userPaths && curP.userPaths.length > 0) {
+      const prevPaths = curP.userPaths.slice(0, -1);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activeIdx ? { ...p, userPaths: prevPaths } : p
+        )
+      );
+      broadcastBoardStateSync();
+      return;
+    }
+    if (curP && curP.userTexts && curP.userTexts.length > 0) {
+      const prevTexts = curP.userTexts.slice(0, -1);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activeIdx ? { ...p, userTexts: prevTexts } : p
+        )
+      );
+      broadcastBoardStateSync();
+      return;
+    }
   }, [broadcastBoardStateSync]);
 
   const handleRedo = useCallback(() => {
+    const activeIdx = activePageIndexRef.current;
+    const action = redoActionStackRef.current.pop();
+
+    if (action && action.pageIndex === activeIdx) {
+      undoActionStackRef.current.push(action);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activeIdx
+            ? { ...p, userPaths: [...action.nextPaths], userTexts: [...action.nextTexts] }
+            : p
+        )
+      );
+      broadcastBoardStateSync();
+      return;
+    }
+
     const engine = engineRef.current;
-    if (!engine) return;
-    engine.redo();
-    const currentShapes = engine.getDrawnShapes();
-    const currentHandwriting = engine.getDrawnHandwriting();
-    setPages((prev) =>
-      prev.map((p, idx) =>
-        idx === activePageIndexRef.current
-          ? { ...p, shapes: [...currentShapes], handwriting: [...currentHandwriting] }
-          : p
-      )
-    );
-    broadcastBoardStateSync();
+    if (engine) {
+      const redone = engine.redo();
+      if (redone) {
+        const currentShapes = engine.getDrawnShapes();
+        const currentHandwriting = engine.getDrawnHandwriting();
+        setPages((prev) =>
+          prev.map((p, idx) =>
+            idx === activeIdx
+              ? { ...p, shapes: [...currentShapes], handwriting: [...currentHandwriting] }
+              : p
+          )
+        );
+        broadcastBoardStateSync();
+        return;
+      }
+    }
   }, [broadcastBoardStateSync]);
 
   // --- Keyboard Shortcuts (Ctrl+Z for Undo, Ctrl+Y / Ctrl+Shift+Z for Redo) ---
@@ -1440,8 +2279,387 @@ export function Whiteboard({
     );
   }, []);
 
+  // --- Slide Media (Images & Videos) Handlers ---
+  const handleMediaGeometryUpdate = useCallback(
+    (id: string, newX: number, newY: number, newW: number, newH: number) => {
+      engineRef.current?.updateShapeGeometry(id, newX, newY, newW, newH);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activePageIndexRef.current
+            ? {
+                ...p,
+                shapes: p.shapes.map((s) =>
+                  s.id === id ? { ...s, x: newX, y: newY, width: newW, height: newH } : s
+                ),
+              }
+            : p
+        )
+      );
+      forceImmediateVisionFrameRef.current = true;
+      broadcastBoardStateSync();
+    },
+    [broadcastBoardStateSync]
+  );
+
+  const handleRemoveMedia = useCallback(
+    (id: string) => {
+      engineRef.current?.removeShapeById(id);
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === activePageIndexRef.current
+            ? {
+                ...p,
+                shapes: p.shapes.filter((s) => s.id !== id),
+              }
+            : p
+        )
+      );
+      forceImmediateVisionFrameRef.current = true;
+      broadcastBoardStateSync();
+    },
+    [broadcastBoardStateSync]
+  );
+
+  const handleVideoAudioChunk = useCallback((base64Pcm16k: string) => {
+    const ws = directVisionWsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ audio: base64Pcm16k, mimeType: 'audio/pcm;rate=16000' }));
+    }
+  }, []);
+
+  const handleMediaVisualFrameChanged = useCallback(() => {
+    forceImmediateVisionFrameRef.current = true;
+    setTimeout(() => {
+      broadcastBoardStateSync();
+    }, 100);
+  }, [broadcastBoardStateSync]);
+
+  const extractMediaMetaAndPoster = useCallback(
+    async (
+      file: File,
+      isVideo: boolean
+    ): Promise<{ naturalWidth: number; naturalHeight: number; durationSec: number; posterDataUrl?: string }> => {
+      const objUrl = URL.createObjectURL(file);
+      try {
+        if (!isVideo) {
+          return await new Promise((resolve) => {
+            const img = new Image();
+            const timer = window.setTimeout(() => {
+              resolve({ naturalWidth: 800, naturalHeight: 600, durationSec: 0 });
+            }, 3500);
+            img.onload = () => {
+              clearTimeout(timer);
+              const nw = img.naturalWidth || 800;
+              const nh = img.naturalHeight || 600;
+              let posterDataUrl: string | undefined;
+              try {
+                const scale = Math.min(1, 320 / Math.max(nw, nh));
+                const c = document.createElement('canvas');
+                c.width = Math.max(1, Math.round(nw * scale));
+                c.height = Math.max(1, Math.round(nh * scale));
+                const ctx = c.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(img, 0, 0, c.width, c.height);
+                  posterDataUrl = c.toDataURL('image/jpeg', 0.72);
+                }
+              } catch {
+                // ignore poster error
+              }
+              resolve({ naturalWidth: nw, naturalHeight: nh, durationSec: 0, posterDataUrl });
+            };
+            img.onerror = () => {
+              clearTimeout(timer);
+              resolve({ naturalWidth: 800, naturalHeight: 600, durationSec: 0 });
+            };
+            img.src = objUrl;
+          });
+        } else {
+          return await new Promise((resolve) => {
+            const vid = document.createElement('video');
+            vid.preload = 'metadata';
+            vid.muted = true;
+            vid.playsInline = true;
+            let settled = false;
+            const finish = (nw: number, nh: number, dur: number, poster?: string) => {
+              if (settled) return;
+              settled = true;
+              vid.removeAttribute('src');
+              vid.load();
+              resolve({
+                naturalWidth: nw || 1280,
+                naturalHeight: nh || 720,
+                durationSec: Number.isFinite(dur) ? dur : 0,
+                posterDataUrl: poster,
+              });
+            };
+            const timer = window.setTimeout(() => {
+              finish(vid.videoWidth || 1280, vid.videoHeight || 720, vid.duration || 0);
+            }, 4000);
+
+            vid.onloadedmetadata = () => {
+              const targetT = Math.min(0.5, Math.max(0.05, (vid.duration || 1) * 0.08));
+              try {
+                vid.currentTime = targetT;
+              } catch {
+                clearTimeout(timer);
+                finish(vid.videoWidth, vid.videoHeight, vid.duration);
+              }
+            };
+            vid.onseeked = () => {
+              clearTimeout(timer);
+              let posterDataUrl: string | undefined;
+              try {
+                const nw = vid.videoWidth || 1280;
+                const nh = vid.videoHeight || 720;
+                const scale = Math.min(1, 320 / Math.max(nw, nh));
+                const c = document.createElement('canvas');
+                c.width = Math.max(1, Math.round(nw * scale));
+                c.height = Math.max(1, Math.round(nh * scale));
+                const ctx = c.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(vid, 0, 0, c.width, c.height);
+                  posterDataUrl = c.toDataURL('image/jpeg', 0.72);
+                }
+              } catch {
+                // ignore poster error
+              }
+              finish(vid.videoWidth, vid.videoHeight, vid.duration, posterDataUrl);
+            };
+            vid.onerror = () => {
+              clearTimeout(timer);
+              finish(1280, 720, 0);
+            };
+            vid.src = objUrl;
+          });
+        }
+      } finally {
+        URL.revokeObjectURL(objUrl);
+      }
+    },
+    []
+  );
+
+  const insertMediaFilesOnSlide = useCallback(
+    async (files: FileList | File[], dropVirtualPoint?: { x: number; y: number }) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const list = Array.from(files).filter(
+        (f) => f && (f.type.startsWith('image/') || f.type.startsWith('video/') || /\.(png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov|mkv|m4v|ogg)$/i.test(f.name))
+      );
+      if (list.length === 0) return;
+
+      // Switch to pointer tool so student can immediately move/resize/play the inserted media
+      setToolMode('pointer');
+
+      for (let idx = 0; idx < list.length; idx++) {
+        const file = list[idx];
+        const isVideo =
+          file.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v|ogg)$/i.test(file.name);
+        const safeMime =
+          file.type || (isVideo ? 'video/mp4' : 'image/png');
+        const safeName =
+          file.name || (isVideo ? `Slide_Video_${Date.now()}.mp4` : `Slide_Image_${Date.now()}.png`);
+
+        showToast(`⏳ Placing ${isVideo ? 'video' : 'image'} "${safeName}" onto Slide ${activePageIndexRef.current + 1}...`);
+
+        const meta = await extractMediaMetaAndPoster(file, isVideo);
+
+        let uploadedUrl = '';
+        let uploadedMediaId = `media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+        try {
+          const res = await fetch('/api/media/upload', {
+            method: 'POST',
+            headers: {
+              'Content-Type': safeMime,
+              'x-file-name': encodeURIComponent(safeName),
+              'x-mime-type': safeMime,
+            },
+            body: file,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.url) {
+              uploadedUrl = data.url;
+              uploadedMediaId = data.mediaId || uploadedMediaId;
+            }
+          }
+        } catch (err) {
+          console.warn('[SlideMedia] Binary vault upload fallback:', err);
+        }
+
+        if (!uploadedUrl) {
+          uploadedUrl = URL.createObjectURL(file);
+        }
+
+        const maxW = isVideo ? 680 : 580;
+        const maxH = isVideo ? 440 : 420;
+        const fitScale = Math.min(1, maxW / Math.max(1, meta.naturalWidth), maxH / Math.max(1, meta.naturalHeight));
+        const cardW = Math.max(220, Math.round(meta.naturalWidth * fitScale));
+        const cardH = Math.max(150, Math.round(meta.naturalHeight * fitScale));
+
+        let posX = 960 + idx * 36;
+        let posY = 180 + idx * 36;
+        let preserveExact = false;
+
+        if (dropVirtualPoint) {
+          posX = Math.round(
+            Math.max(30, Math.min(VIRTUAL_WIDTH - cardW - 30, dropVirtualPoint.x - cardW / 2 + idx * 32))
+          );
+          posY = Math.round(
+            Math.max(60, Math.min(VIRTUAL_HEIGHT - cardH - 30, dropVirtualPoint.y - cardH / 2 + idx * 32))
+          );
+          preserveExact = true;
+        }
+
+        const shapeId = `media-${uploadedMediaId}`;
+        const scheduledTime = engine.audioClock.currentTime;
+
+        engine.onDrawCommand({
+          id: shapeId,
+          type: 'shape',
+          scheduledTime,
+          commitGroup: `media-insert-${Date.now()}-${idx}`,
+          payload: {
+            kind: 'shape',
+            id: shapeId,
+            shapeType: isVideo ? 'video' : 'image',
+            x: posX,
+            y: posY,
+            width: cardW,
+            height: cardH,
+            options: {
+              label: safeName,
+              preserveExactPosition: preserveExact,
+              media: {
+                mediaId: uploadedMediaId,
+                mediaType: isVideo ? 'video' : 'image',
+                url: uploadedUrl,
+                fileName: safeName,
+                mimeType: safeMime,
+                naturalWidth: meta.naturalWidth,
+                naturalHeight: meta.naturalHeight,
+                durationSec: meta.durationSec,
+                posterDataUrl: meta.posterDataUrl,
+                shareAudioWithAI: true,
+              },
+            },
+          },
+        });
+
+        showToast(
+          isVideo
+            ? `🎬 Video "${safeName}" placed on Slide ${activePageIndexRef.current + 1} — AI Vision & Deep Timeline Ready`
+            : `🖼️ Image "${safeName}" placed on Slide ${activePageIndexRef.current + 1} — AI Vision Ready`
+        );
+      }
+
+      // Sync pages, thumbnails, LiveKit board state, and trigger immediate Vision composite frame
+      setTimeout(() => {
+        scheduleLiveSlideSync();
+        broadcastBoardStateSync();
+        forceImmediateVisionFrameRef.current = true;
+      }, 150);
+    },
+    [extractMediaMetaAndPoster, scheduleLiveSlideSync, broadcastBoardStateSync, showToast]
+  );
+
+  const handleSlideMediaInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files.length > 0) {
+        void insertMediaFilesOnSlide(e.target.files);
+        e.target.value = '';
+      }
+    },
+    [insertMediaFilesOnSlide]
+  );
+
+  const handleCanvasDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (e.dataTransfer?.types?.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!isCanvasDragOver) setIsCanvasDragOver(true);
+    }
+  }, [isCanvasDragOver]);
+
+  const handleCanvasDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsCanvasDragOver(false);
+    }
+  }, []);
+
+  const handleCanvasDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      setIsCanvasDragOver(false);
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+
+      const hasSlideMedia = Array.from(files).some(
+        (f) =>
+          f.type.startsWith('image/') ||
+          f.type.startsWith('video/') ||
+          /\.(png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov|mkv|m4v|ogg)$/i.test(f.name)
+      );
+      if (!hasSlideMedia) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      let dropPt: { x: number; y: number } | undefined;
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const vx = (e.clientX - rect.left - transformRef.current.pan.x) / Math.max(0.2, transformRef.current.zoom);
+        const vy = (e.clientY - rect.top - transformRef.current.pan.y) / Math.max(0.2, transformRef.current.zoom);
+        dropPt = { x: vx, y: vy };
+      }
+
+      void insertMediaFilesOnSlide(files, dropPt);
+    },
+    [insertMediaFilesOnSlide]
+  );
+
+  // Global Ctrl+V paste onto slide when no text input is focused
+  useEffect(() => {
+    const handleWindowPaste = (e: ClipboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.isContentEditable ||
+          active.closest('.chat-drawer'))
+      ) {
+        return;
+      }
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const mediaFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === 'file') {
+          const f = it.getAsFile();
+          if (f && (f.type.startsWith('image/') || f.type.startsWith('video/'))) {
+            mediaFiles.push(f);
+          }
+        }
+      }
+      if (mediaFiles.length > 0) {
+        e.preventDefault();
+        void insertMediaFilesOnSlide(mediaFiles);
+      }
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => window.removeEventListener('paste', handleWindowPaste);
+  }, [insertMediaFilesOnSlide]);
+
   const processQuickFile = (file: File) => {
     if (!file) return;
+    if (file.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v|ogg)$/i.test(file.name)) {
+      // Place video directly onto the active whiteboard slide via Binary Media Vault (zero Base64 bloat)
+      void insertMediaFilesOnSlide([file]);
+      return;
+    }
     const isImg = file.type.startsWith('image/');
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -1531,13 +2749,20 @@ export function Whiteboard({
     await handleSendMessage(text, currentAttachment || undefined);
   };
 
+  const MIC_CAPTURE_OPTIONS = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+
   // --- Toggle microphone state ---
   const toggleMicrophone = async () => {
     if (!room) return;
 
     try {
-      await room.localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
-      setIsMicrophoneEnabled(!isMicrophoneEnabled);
+      const nextState = !isMicrophoneEnabled;
+      await room.localParticipant.setMicrophoneEnabled(nextState, nextState ? MIC_CAPTURE_OPTIONS : undefined);
+      setIsMicrophoneEnabled(nextState);
     } catch (error) {
       console.error('[Whiteboard] Failed to toggle microphone:', error);
       setIsMicrophoneEnabled(!isMicrophoneEnabled);
@@ -1611,7 +2836,7 @@ export function Whiteboard({
     }
 
     // 3. Show feedback toast to user
-    setSaveToast('🔄 AI Memory & Context Reset (Turn 0) — ذاكرة الذكاء الاصطناعي تم تصفيرها بالكامل');
+    setSaveToast('🔄 AI Memory & Context Reset (Turn 0) — Fresh Context Ready');
     setTimeout(() => setSaveToast(null), 3500);
   }, [room, isSpeakerMuted]);
 
@@ -1663,39 +2888,7 @@ export function Whiteboard({
           }
           const item = msg.payload;
           if (item && item.text) {
-            setChatMessages((prev) => {
-              const cleanText = item.text.trim();
-              const existingIdx = prev.findIndex((m) => m.id === item.id);
-              if (existingIdx !== -1) {
-                // Update live transcript of the same turn in real time
-                const updated = [...prev];
-                updated[existingIdx] = {
-                  ...updated[existingIdx],
-                  text: cleanText,
-                  role: item.role || updated[existingIdx].role,
-                };
-                return updated;
-              }
-
-              // Deduplicate if identical recent message exists
-              const isDuplicate = prev.some(
-                (m) =>
-                  m.role === item.role &&
-                  m.text.trim() === cleanText &&
-                  Math.abs(m.timestamp - (item.timestamp || Date.now())) < 4000
-              );
-              if (isDuplicate) return prev;
-
-              return [
-                ...prev,
-                {
-                  id: item.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                  role: item.role || 'assistant',
-                  text: cleanText,
-                  timestamp: item.timestamp || Date.now(),
-                },
-              ];
-            });
+            setChatMessages((prev) => reconcileLiveChatMessages(prev, item));
           }
         } else if (msg.type === 'shape' || msg.type === 'handwriting') {
           const drawPayload = msg.payload;
@@ -1772,7 +2965,11 @@ export function Whiteboard({
             )
           );
         } else if (msg.type === 'new_page') {
-          addNewPage();
+          const slideTitle =
+            typeof msg.payload?.title === 'string' && msg.payload.title.trim()
+              ? msg.payload.title.trim()
+              : undefined;
+          addNewPage(slideTitle);
         }
 
         // Keep agent memory in sync with new drawing/erasing updates
@@ -2009,17 +3206,13 @@ export function Whiteboard({
     setHasStarted(true);
     await engine.audioClock.resume();
 
-    // Ensure whiteboard starts completely blank
-    engine.clear();
-    const canvas = canvasRef.current;
-    if (canvas) canvas.getAdapter().clear();
-    const svg = svgRef.current;
-    if (svg) svg.clear();
+    // Preserve any auto-restored or user-drawn slides on the board and sync state to the AI agent
+    broadcastBoardStateSync();
 
     if (room) {
       try {
-        // Enable microphone
-        await room.localParticipant.setMicrophoneEnabled(true);
+        // Enable microphone with echo cancellation and noise suppression
+        await room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS);
         setIsMicrophoneEnabled(true);
         console.log('[Whiteboard] Microphone successfully enabled for LiveKit session');
       } catch (err) {
@@ -2029,13 +3222,13 @@ export function Whiteboard({
     } else {
       setIsMicrophoneEnabled(true);
     }
-  }, [room]);
+  }, [room, broadcastBoardStateSync]);
 
   // Ensure microphone is strictly disabled before Start Session is clicked
   useEffect(() => {
     if (room) {
       if (hasStarted) {
-        room.localParticipant.setMicrophoneEnabled(true)
+        room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS)
           .then(() => setIsMicrophoneEnabled(true))
           .catch(err => console.error('[Whiteboard] Auto-reconnect mic failed:', err));
       } else {
@@ -2083,7 +3276,34 @@ export function Whiteboard({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onDragOver={handleCanvasDragOver}
+      onDragLeave={handleCanvasDragLeave}
+      onDrop={handleCanvasDrop}
     >
+      {isCanvasDragOver && (
+        <div
+          className="no-vision no-zoom"
+          style={{
+            position: 'absolute',
+            inset: 16,
+            borderRadius: 16,
+            border: '2px dashed #4ECDC4',
+            backgroundColor: 'rgba(78, 205, 196, 0.12)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 90,
+            pointerEvents: 'none',
+            color: '#4ECDC4',
+            fontSize: 18,
+            fontWeight: 700,
+            fontFamily: "'Inter', sans-serif",
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          🖼️🎬 Drop Image or Video directly onto Slide {activePageIndex + 1}
+        </div>
+      )}
       {/* ── Virtual Canvas Container (Fixed 1920x1080 Viewport) ── */}
       <div
         ref={viewportRef}
@@ -2107,12 +3327,24 @@ export function Whiteboard({
           height={VIRTUAL_HEIGHT}
         />
 
+        {/* Layer 1.5: Interactive Slide Media Layer (High-Res Images & Playable Videos with AI Vision/Audio Tap) */}
+        <SlideMediaOverlay
+          ref={mediaRef}
+          zoom={transform.zoom}
+          toolMode={toolMode}
+          onUpdateGeometry={handleMediaGeometryUpdate}
+          onRemoveMedia={handleRemoveMedia}
+          onMediaVisualFrameChanged={handleMediaVisualFrameChanged}
+          onVideoAudioChunk={handleVideoAudioChunk}
+        />
+
         {/* Layer 2: SVG Overlay (Handwritten Text & Real-time Stroke Reveal) */}
         <SVGOverlay
           ref={svgRef}
           width={VIRTUAL_WIDTH}
           height={VIRTUAL_HEIGHT}
           fontUrl={FONT_URL}
+          onWritingFocus={handleWritingFocus}
         />
 
         {/* Layer 3: Math Overlay (High-Precision KaTeX Math & Equations) */}
@@ -2146,6 +3378,21 @@ export function Whiteboard({
           paths={pages[activePageIndex]?.userPaths || []}
           texts={pages[activePageIndex]?.userTexts || []}
           onPathsChange={(newPaths) => {
+            const currentP = pagesRef.current[activePageIndexRef.current];
+            const oldPaths = currentP?.userPaths || [];
+            const oldTexts = currentP?.userTexts || [];
+            undoActionStackRef.current.push({
+              kind: 'user',
+              pageIndex: activePageIndexRef.current,
+              previousPaths: [...oldPaths],
+              previousTexts: [...oldTexts],
+              nextPaths: [...newPaths],
+              nextTexts: [...oldTexts],
+            });
+            if (undoActionStackRef.current.length > 50) {
+              undoActionStackRef.current.shift();
+            }
+            redoActionStackRef.current = [];
             setPages((prev) =>
               prev.map((p, idx) =>
                 idx === activePageIndex ? { ...p, userPaths: newPaths } : p
@@ -2153,6 +3400,21 @@ export function Whiteboard({
             );
           }}
           onTextsChange={(newTexts) => {
+            const currentP = pagesRef.current[activePageIndexRef.current];
+            const oldPaths = currentP?.userPaths || [];
+            const oldTexts = currentP?.userTexts || [];
+            undoActionStackRef.current.push({
+              kind: 'user',
+              pageIndex: activePageIndexRef.current,
+              previousPaths: [...oldPaths],
+              previousTexts: [...oldTexts],
+              nextPaths: [...oldPaths],
+              nextTexts: [...newTexts],
+            });
+            if (undoActionStackRef.current.length > 50) {
+              undoActionStackRef.current.shift();
+            }
+            redoActionStackRef.current = [];
             setPages((prev) =>
               prev.map((p, idx) =>
                 idx === activePageIndex ? { ...p, userTexts: newTexts } : p
@@ -2170,7 +3432,7 @@ export function Whiteboard({
         style={{
           position: 'fixed',
           top: 20,
-          right: isSlidePanelOpen ? (typeof window !== 'undefined' && window.innerWidth <= 768 ? 20 : 320) : 20,
+          right: isSlidePanelOpen ? (typeof window !== 'undefined' && window.innerWidth <= 768 ? 20 : 336) : 20,
           zIndex: 40,
           display: 'flex',
           alignItems: 'center',
@@ -2179,6 +3441,45 @@ export function Whiteboard({
         }}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {/* ŽYREN AI Tutor Readiness Status Badge */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '7px 14px',
+            backgroundColor: isAgentReady ? 'rgba(20, 20, 38, 0.92)' : 'rgba(35, 25, 20, 0.92)',
+            backdropFilter: 'blur(12px)',
+            borderRadius: 20,
+            border: isAgentReady ? '1px solid rgba(78, 205, 196, 0.5)' : '1px solid rgba(255, 193, 7, 0.4)',
+            boxShadow: isAgentReady ? '0 4px 16px rgba(78, 205, 196, 0.2)' : '0 4px 16px rgba(0,0,0,0.3)',
+            transition: 'all 0.3s ease',
+          }}
+          title={isAgentReady ? 'ŽYREN AI Tutor is online and ready for voice interaction' : 'Preparing ŽYREN AI Tutor agent connection...'}
+        >
+          <div
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              backgroundColor: isAgentReady ? '#4ECDC4' : '#FFB300',
+              boxShadow: isAgentReady ? '0 0 10px #4ECDC4' : '0 0 8px #FFB300',
+              animation: isAgentReady ? 'none' : 'zyrenPulse 1.5s infinite ease-in-out',
+            }}
+          />
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: isAgentReady ? '#4ECDC4' : '#FFD54F',
+              fontFamily: "'Inter', sans-serif",
+              letterSpacing: '0.2px',
+            }}
+          >
+            {isAgentReady ? 'ŽYREN AI Tutor Ready 🎓' : '⏳ Preparing ŽYREN AI Tutor...'}
+          </span>
+        </div>
+
         {/* Live AI Vision Feed Status Badge */}
         <div
           style={{
@@ -2294,7 +3595,7 @@ export function Whiteboard({
       {/* ── Top Left: Professional File Menu Bar ── */}
       <FileMenu
         currentTitle={sessionTitle}
-        onUpdateTitle={setSessionTitle}
+        onUpdateTitle={handleUpdateSessionTitle}
         pages={pages}
         activePageIndex={activePageIndex}
         onNewFile={handleNewFile}
@@ -2306,9 +3607,13 @@ export function Whiteboard({
         onExportPDF={handleExportPDF}
         onClearSlide={handleClearSlide}
         recentSessions={recentSessions}
+        activeSessionId={activeSessionId}
         onLoadRecent={handleLoadRecent}
         onDeleteRecent={handleDeleteRecent}
         onOpenVoiceModal={() => setIsVoiceModalOpen(true)}
+        onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
+        autoSaveState={autoSaveState}
+        lastAutoSavedAt={lastAutoSavedAt}
       />
 
       {/* ── Top Left: Diagnostics Overlay (Toggled via button) ── */}
@@ -2378,34 +3683,44 @@ export function Whiteboard({
         onPointerEnter={() => setIsHoveringBottom(true)}
         onPointerLeave={() => setIsHoveringBottom(false)}
       >
-        {/* Pin Toolbar Button */}
-        <button
-          onClick={() => setIsToolbarPinned(!isToolbarPinned)}
-          title={isToolbarPinned ? "Unpin Toolbar (Auto-hide)" : "Pin Toolbar"}
+        {/* ── Island 1: Live Session & Prompt Communication Dock ── */}
+        <div
           style={{
-            background: 'none',
-            border: 'none',
-            color: isToolbarPinned ? '#4ECDC4' : '#888',
-            cursor: 'pointer',
-            fontSize: 16,
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            padding: 4,
-            marginRight: 8,
+            gap: 5,
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            padding: '4px 6px',
+            borderRadius: 10,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
           }}
         >
-          {isToolbarPinned ? '📌' : '📍'}
-        </button>
-        {/* ── Group 1: Voice & AI Live Interaction ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Pin Toolbar Button */}
+          <button
+            onClick={() => setIsToolbarPinned(!isToolbarPinned)}
+            title={isToolbarPinned ? "Unpin Toolbar (Auto-hide)" : "Pin Toolbar"}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: isToolbarPinned ? '#4ECDC4' : '#888',
+              cursor: 'pointer',
+              fontSize: 15,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 4,
+            }}
+          >
+            {isToolbarPinned ? '📌' : '📍'}
+          </button>
+
           {!hasStarted ? (
             <button
               onClick={startSession}
               title="Start Live ZYREN AI Tutor Session"
               style={{
-                padding: '8px 16px',
-                fontSize: 13,
+                padding: '7px 14px',
+                fontSize: 12,
                 fontWeight: 700,
                 backgroundColor: '#4ECDC4',
                 color: '#121222',
@@ -2413,23 +3728,23 @@ export function Whiteboard({
                 borderRadius: 8,
                 cursor: 'pointer',
                 fontFamily: "'Inter', sans-serif",
-                boxShadow: '0 2px 12px rgba(78, 205, 196, 0.4)',
+                boxShadow: '0 2px 10px rgba(78, 205, 196, 0.4)',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6,
+                gap: 5,
                 transition: 'all 0.15s ease',
               }}
             >
               <span>🚀</span>
-              <span>Start Session</span>
+              <span>Start</span>
             </button>
           ) : (
             <button
               onClick={toggleMicrophone}
               title={isMicrophoneEnabled ? 'Mute Microphone' : 'Unmute Microphone'}
               style={{
-                padding: '8px 12px',
-                fontSize: 14,
+                padding: '7px 11px',
+                fontSize: 13,
                 fontWeight: 600,
                 backgroundColor: isMicrophoneEnabled ? 'rgba(78, 205, 196, 0.2)' : 'rgba(248, 113, 113, 0.2)',
                 color: isMicrophoneEnabled ? '#4ECDC4' : '#f87171',
@@ -2451,8 +3766,8 @@ export function Whiteboard({
             onClick={toggleSpeakerMute}
             title={isSpeakerMuted ? 'Unmute AI Voice Output' : 'Mute AI Voice Output (Silent reading mode)'}
             style={{
-              padding: '8px 12px',
-              fontSize: 14,
+              padding: '7px 10px',
+              fontSize: 13,
               fontWeight: 600,
               backgroundColor: isSpeakerMuted ? 'rgba(248, 113, 113, 0.2)' : 'rgba(78, 205, 196, 0.2)',
               color: isSpeakerMuted ? '#f87171' : '#4ECDC4',
@@ -2474,8 +3789,8 @@ export function Whiteboard({
             onClick={() => setIsChatDrawerOpen(!isChatDrawerOpen)}
             title="Toggle ZYREN AI Tutor Live Chat & Transcripts"
             style={{
-              padding: '8px 12px',
-              fontSize: 14,
+              padding: '7px 10px',
+              fontSize: 13,
               fontWeight: 600,
               backgroundColor: isChatDrawerOpen ? 'rgba(78, 205, 196, 0.25)' : 'rgba(255, 255, 255, 0.07)',
               color: isChatDrawerOpen ? '#4ECDC4' : '#FFF',
@@ -2512,7 +3827,7 @@ export function Whiteboard({
               type="file"
               ref={quickFileInputRef}
               onChange={handleQuickFileChange}
-              accept="image/*,.pdf,.txt,.py,.json,.csv,.md,.js,.ts,.html,.css"
+              accept="image/*,video/*,.pdf,.txt,.py,.json,.csv,.md,.js,.ts,.html,.css"
               style={{ display: 'none' }}
             />
 
@@ -2535,7 +3850,7 @@ export function Whiteboard({
                   gap: 6,
                   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.6)',
                   zIndex: 100,
-                  maxWidth: 220,
+                  maxWidth: 200,
                 }}
               >
                 {attachedFile.type === 'image' && attachedFile.dataUrl ? (
@@ -2574,12 +3889,12 @@ export function Whiteboard({
               onClick={() => quickFileInputRef.current?.click()}
               title="Attach Image or File to ask ZYREN AI Tutor"
               style={{
-                padding: '7px 9px',
+                padding: '6px 8px',
                 backgroundColor: attachedFile ? 'rgba(78, 205, 196, 0.25)' : 'rgba(255, 255, 255, 0.08)',
                 color: attachedFile ? '#4ECDC4' : '#FFF',
                 border: attachedFile ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.15)',
                 borderRadius: 7,
-                fontSize: 13,
+                fontSize: 12,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
@@ -2593,13 +3908,12 @@ export function Whiteboard({
             <textarea
               placeholder={attachedFile ? `Ask about ${attachedFile.name}...` : "Ask ZYREN AI Tutor..."}
               value={inputText}
-              rows={Math.min(4, Math.max(1, inputText.split('\n').length))}
+              rows={Math.min(3, Math.max(1, inputText.split('\n').length))}
               onChange={(e) => setInputText(e.target.value)}
               onPaste={handleQuickPaste}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   if (e.shiftKey || e.ctrlKey) {
-                    // Add new line on Shift+Enter or Ctrl+Enter
                     return;
                   } else {
                     e.preventDefault();
@@ -2608,18 +3922,18 @@ export function Whiteboard({
                 }
               }}
               style={{
-                padding: '7px 10px',
+                padding: '6px 9px',
                 backgroundColor: 'rgba(0, 0, 0, 0.5)',
                 color: '#FFF',
                 border: '1px solid rgba(255, 255, 255, 0.15)',
                 borderRadius: 7,
                 fontSize: 12,
                 outline: 'none',
-                width: 220,
-                minHeight: 34,
-                maxHeight: 90,
+                width: 175,
+                minHeight: 30,
+                maxHeight: 70,
                 resize: 'none',
-                lineHeight: 1.4,
+                lineHeight: 1.35,
                 fontFamily: "'Inter', sans-serif",
                 overscrollBehavior: 'contain',
               }}
@@ -2628,13 +3942,13 @@ export function Whiteboard({
               type="submit"
               disabled={!inputText.trim() && !attachedFile}
               style={{
-                padding: '7px 11px',
+                padding: '6px 10px',
                 backgroundColor: (inputText.trim() || attachedFile) ? '#4ECDC4' : 'rgba(255, 255, 255, 0.08)',
                 color: (inputText.trim() || attachedFile) ? '#121222' : '#666',
                 border: 'none',
                 borderRadius: 7,
                 fontWeight: 700,
-                fontSize: 12,
+                fontSize: 11,
                 cursor: (inputText.trim() || attachedFile) ? 'pointer' : 'default',
               }}
             >
@@ -2643,23 +3957,217 @@ export function Whiteboard({
           </form>
         </div>
 
-        {/* Separator */}
-        <div style={{ width: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
+        {/* ── Island 2: Canvas Creation & Annotation Tools Dock ── */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            padding: '4px 6px',
+            borderRadius: 10,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+          }}
+        >
+          {/* Undo */}
+          <button
+            onClick={handleUndo}
+            title="Undo Last Action (Ctrl+Z) — Undoes Pen, Text, and AI Drawings"
+            style={{
+              padding: '7px 9px',
+              fontSize: 13,
+              fontWeight: 600,
+              backgroundColor: 'rgba(255, 255, 255, 0.07)',
+              color: '#FFF',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <span>↩️</span>
+          </button>
 
-        {/* ── Group 2: Vision Feeds (Screen Share, Webcam, Split-View) ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Redo */}
+          <button
+            onClick={handleRedo}
+            title="Redo Last Undone Action (Ctrl+Y)"
+            style={{
+              padding: '7px 9px',
+              fontSize: 13,
+              fontWeight: 600,
+              backgroundColor: 'rgba(255, 255, 255, 0.07)',
+              color: '#FFF',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <span>↪️</span>
+          </button>
+
+          <div style={{ width: 1, height: 20, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 1px' }} />
+
+          {/* User Tools (Pointer, Pen, Text, Eraser) */}
+          <button
+            onClick={() => setToolMode('pointer')}
+            title="Pointer Tool"
+            style={{
+              padding: '7px 9px',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: toolMode === 'pointer' ? 'rgba(78, 205, 196, 0.22)' : 'rgba(255, 255, 255, 0.07)',
+              color: toolMode === 'pointer' ? '#4ECDC4' : '#FFF',
+              border: toolMode === 'pointer' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+            }}
+          >
+            🖱️
+          </button>
+          
+          <button
+            onClick={() => setToolMode('pen')}
+            title="Pen Tool (Draw Handwriting)"
+            style={{
+              padding: '7px 9px',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: toolMode === 'pen' ? 'rgba(78, 205, 196, 0.22)' : 'rgba(255, 255, 255, 0.07)',
+              color: toolMode === 'pen' ? '#4ECDC4' : '#FFF',
+              border: toolMode === 'pen' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+            }}
+          >
+            🖍️
+          </button>
+          
+          <button
+            onClick={() => setToolMode('text')}
+            title="Text Tool (Type Normal Text)"
+            style={{
+              padding: '7px 9px',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: toolMode === 'text' ? 'rgba(78, 205, 196, 0.22)' : 'rgba(255, 255, 255, 0.07)',
+              color: toolMode === 'text' ? '#4ECDC4' : '#FFF',
+              border: toolMode === 'text' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+            }}
+          >
+            🔤
+          </button>
+          
+          <button
+            onClick={() => setToolMode('eraser')}
+            title="Eraser Tool"
+            style={{
+              padding: '7px 9px',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: toolMode === 'eraser' ? 'rgba(255, 107, 107, 0.22)' : 'rgba(255, 255, 255, 0.07)',
+              color: toolMode === 'eraser' ? '#FF6B6B' : '#FFF',
+              border: toolMode === 'eraser' ? '1px solid #FF6B6B' : '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 7,
+              cursor: 'pointer',
+            }}
+          >
+            🧽
+          </button>
+
+          {/* Insert Image / Video onto Active Slide */}
+          <input
+            type="file"
+            ref={slideMediaInputRef}
+            onChange={handleSlideMediaInputChange}
+            accept="image/*,video/*"
+            multiple
+            style={{ display: 'none' }}
+          />
+          <button
+            onClick={() => slideMediaInputRef.current?.click()}
+            title="Insert Image or Video onto Active Slide (or Drag & Drop / Ctrl+V onto Whiteboard)"
+            style={{
+              padding: '7px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: 'rgba(78, 205, 196, 0.16)',
+              color: '#4ECDC4',
+              border: '1px solid rgba(78, 205, 196, 0.45)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <span>🖼️🎬</span>
+            <span>Media</span>
+          </button>
+
+          {/* Clear Slide */}
+          <button
+            onClick={() => {
+              const engine = engineRef.current;
+              if (engine) engine.clear();
+              setPages((prev) =>
+                prev.map((p, idx) =>
+                  idx === activePageIndexRef.current
+                    ? { ...p, title: `Slide ${p.pageNumber}`, shapes: [], handwriting: [], userPaths: [], userTexts: [] }
+                    : p
+                )
+              );
+            }}
+            title="Clear all drawings, text, and formulas on active slide"
+            style={{
+              padding: '7px 9px',
+              fontSize: 13,
+              fontWeight: 600,
+              backgroundColor: 'rgba(255, 107, 107, 0.18)',
+              color: '#FF6B6B',
+              border: '1px solid rgba(255, 107, 107, 0.35)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <span>🧹</span>
+          </button>
+        </div>
+
+        {/* ── Island 3: Vision Feeds (Screen Share, Webcam, Split-View) ── */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            padding: '4px 6px',
+            borderRadius: 10,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+          }}
+        >
           {/* Screen Share */}
           <button
             onClick={handleToggleScreenShare}
             title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen with ZYREN AI Tutor'}
             style={{
-              padding: '8px 11px',
-              fontSize: 14,
+              padding: '7px 9px',
+              fontSize: 13,
               fontWeight: 600,
               backgroundColor: isScreenSharing ? 'rgba(255, 107, 107, 0.25)' : 'rgba(255, 255, 255, 0.07)',
               color: isScreenSharing ? '#FF6B6B' : '#FFF',
               border: isScreenSharing ? '1px solid #FF6B6B' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -2674,13 +4182,13 @@ export function Whiteboard({
             onClick={handleToggleWebcam}
             title={isWebcamActive ? 'Turn Off Webcam' : 'Enable Webcam for AI Vision'}
             style={{
-              padding: '8px 11px',
-              fontSize: 14,
+              padding: '7px 9px',
+              fontSize: 13,
               fontWeight: 600,
               backgroundColor: isWebcamActive ? 'rgba(78, 205, 196, 0.25)' : 'rgba(255, 255, 255, 0.07)',
               color: isWebcamActive ? '#4ECDC4' : '#FFF',
               border: isWebcamActive ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -2704,224 +4212,52 @@ export function Whiteboard({
             }}
             title="Toggle Split-View (Parallel Vision for Whiteboard + Screen + Webcam)"
             style={{
-              padding: '8px 11px',
-              fontSize: 12,
+              padding: '7px 9px',
+              fontSize: 11,
               fontWeight: 600,
               backgroundColor: isSplitViewEnabled ? 'rgba(168, 85, 247, 0.28)' : 'rgba(255, 255, 255, 0.07)',
               color: isSplitViewEnabled ? '#D8B4FE' : '#FFF',
               border: isSplitViewEnabled ? '1px solid #A855F7' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 5,
+              gap: 4,
             }}
           >
             <span>🔀</span>
-            <span>{isSplitViewEnabled ? 'Split ON' : 'Split View'}</span>
+            <span>{isSplitViewEnabled ? 'Split ON' : 'Split'}</span>
           </button>
         </div>
 
-        {/* Separator */}
-        <div style={{ width: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
-
-        {/* ── Group 3: Whiteboard Action History & Canvas Controls ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {/* Undo */}
-          <button
-            onClick={handleUndo}
-            title="Undo Last Action (Ctrl+Z)"
-            style={{
-              padding: '8px 10px',
-              fontSize: 14,
-              fontWeight: 600,
-              backgroundColor: 'rgba(255, 255, 255, 0.07)',
-              color: '#FFF',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <span>↩️</span>
-          </button>
-
-          {/* Redo */}
-          <button
-            onClick={handleRedo}
-            title="Redo Last Undone Action (Ctrl+Y)"
-            style={{
-              padding: '8px 10px',
-              fontSize: 14,
-              fontWeight: 600,
-              backgroundColor: 'rgba(255, 255, 255, 0.07)',
-              color: '#FFF',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <span>↪️</span>
-          </button>
-
-          {/* Separator */}
-          <div style={{ width: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
-
-          {/* User Tools (Pointer, Pen, Text) */}
-          <button
-            onClick={() => setToolMode('pointer')}
-            title="Pointer Tool"
-            style={{
-              padding: '8px 10px',
-              fontSize: 12,
-              fontWeight: 600,
-              backgroundColor: toolMode === 'pointer' ? 'rgba(78, 205, 196, 0.2)' : 'rgba(255, 255, 255, 0.07)',
-              color: toolMode === 'pointer' ? '#4ECDC4' : '#FFF',
-              border: toolMode === 'pointer' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-            }}
-          >
-            🖱️
-          </button>
-          
-          <button
-            onClick={() => setToolMode('pen')}
-            title="Pen Tool (Draw Handwriting)"
-            style={{
-              padding: '8px 10px',
-              fontSize: 12,
-              fontWeight: 600,
-              backgroundColor: toolMode === 'pen' ? 'rgba(78, 205, 196, 0.2)' : 'rgba(255, 255, 255, 0.07)',
-              color: toolMode === 'pen' ? '#4ECDC4' : '#FFF',
-              border: toolMode === 'pen' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-            }}
-          >
-            🖍️
-          </button>
-          
-          <button
-            onClick={() => setToolMode('text')}
-            title="Text Tool (Type Normal Text)"
-            style={{
-              padding: '8px 10px',
-              fontSize: 12,
-              fontWeight: 600,
-              backgroundColor: toolMode === 'text' ? 'rgba(78, 205, 196, 0.2)' : 'rgba(255, 255, 255, 0.07)',
-              color: toolMode === 'text' ? '#4ECDC4' : '#FFF',
-              border: toolMode === 'text' ? '1px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-            }}
-          >
-            🔤
-          </button>
-          
-          <button
-            onClick={() => setToolMode('eraser')}
-            title="Eraser Tool"
-            style={{
-              padding: '8px 10px',
-              fontSize: 12,
-              fontWeight: 600,
-              backgroundColor: toolMode === 'eraser' ? 'rgba(255, 107, 107, 0.2)' : 'rgba(255, 255, 255, 0.07)',
-              color: toolMode === 'eraser' ? '#FF6B6B' : '#FFF',
-              border: toolMode === 'eraser' ? '1px solid #FF6B6B' : '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
-              cursor: 'pointer',
-            }}
-          >
-            🧽
-          </button>
-
-          {/* Clear Slide */}
-          <button
-            onClick={() => {
-              const engine = engineRef.current;
-              if (engine) engine.clear();
-              setPages((prev) =>
-                prev.map((p, idx) =>
-                  idx === activePageIndexRef.current
-                    ? { ...p, title: `Slide ${p.pageNumber}`, shapes: [], handwriting: [] }
-                    : p
-                )
-              );
-            }}
-            title="Clear all drawings and formulas on active slide"
-            style={{
-              padding: '8px 10px',
-              fontSize: 14,
-              fontWeight: 600,
-              backgroundColor: 'rgba(255, 107, 107, 0.2)',
-              color: '#FF6B6B',
-              border: '1px solid rgba(255, 107, 107, 0.4)',
-              borderRadius: 8,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <span>🧹</span>
-          </button>
-
-          {/* Reset AI Memory / Context */}
-          <button
-            onClick={handleResetAIMemory}
-            title="Reset AI Memory (Start New Conversation / بدء محادثة جديدة بذاكرة نظيفة)"
-            style={{
-              padding: '8px 10px',
-              fontSize: 14,
-              fontWeight: 600,
-              backgroundColor: 'rgba(255, 107, 107, 0.2)',
-              color: '#FF6B6B',
-              border: '1px solid rgba(255, 107, 107, 0.4)',
-              borderRadius: 8,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.35)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.2)';
-            }}
-          >
-            <span>🔄</span>
-          </button>
-        </div>
-
-        {/* Separator */}
-        <div style={{ width: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
-
-        {/* ── Group 4: Voice & Diagnostics ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {/* ── Island 4: AI Tutor Studio & Model Controls ── */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            padding: '4px 6px',
+            borderRadius: 10,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+          }}
+        >
           {/* Voice Selector */}
           <button
             onClick={() => setIsVoiceModalOpen(true)}
             title="Choose from 30 Gemini Live Voice Personas"
             style={{
-              padding: '8px 12px',
-              fontSize: 12,
+              padding: '7px 10px',
+              fontSize: 11,
               fontWeight: 600,
               backgroundColor: 'rgba(78, 205, 196, 0.15)',
               color: '#4ECDC4',
               border: '1px solid rgba(78, 205, 196, 0.35)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 5,
+              gap: 4,
             }}
           >
             <span>🎙️</span>
@@ -2933,17 +4269,17 @@ export function Whiteboard({
             onClick={() => setIsModelModalOpen(true)}
             title={`Active Gemini Model: ${activeModelObj.name} (${activeModelObj.badge})${activeModelObj.supportedThinkingLevels.length > 0 ? ` • Thinking: ${(currentThinkingLevel || 'high').toUpperCase()}` : ''}`}
             style={{
-              padding: '8px 12px',
-              fontSize: 12,
+              padding: '7px 10px',
+              fontSize: 11,
               fontWeight: 600,
               backgroundColor: 'rgba(168, 85, 247, 0.15)',
               color: '#C084FC',
               border: '1px solid rgba(168, 85, 247, 0.35)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              gap: 5,
               transition: 'all 0.15s ease',
             }}
           >
@@ -2952,9 +4288,9 @@ export function Whiteboard({
             {activeModelObj.supportedThinkingLevels.length > 0 && (
               <span
                 style={{
-                  fontSize: 10,
+                  fontSize: 9,
                   backgroundColor: 'rgba(168, 85, 247, 0.35)',
-                  padding: '1px 6px',
+                  padding: '1px 5px',
                   borderRadius: 4,
                   fontWeight: 700,
                   textTransform: 'uppercase',
@@ -2966,29 +4302,95 @@ export function Whiteboard({
             )}
           </button>
 
+          {/* Speaking Style, Vocal Tone & Persona Studio Selector */}
+          <button
+            onClick={() => setIsPersonaModalOpen(true)}
+            title={`Speaking Style & Persona: ${
+              VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.name || verbosity
+            } • ${VOCAL_TONE_OPTIONS.find((t) => t.id === vocalTone)?.name || vocalTone} • ${
+              LEARNER_PROFILE_OPTIONS.find((p) => p.id === learnerProfile)?.name || learnerProfile
+            } (Click to customize live)`}
+            style={{
+              padding: '7px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: 'rgba(56, 239, 125, 0.14)',
+              color: '#38EF7D',
+              border: '1px solid rgba(56, 239, 125, 0.35)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>🎭</span>
+            <span>
+              {VERBOSITY_OPTIONS.find((v) => v.id === verbosity)?.shortLabel || 'Balanced'}
+            </span>
+          </button>
+
+          {/* Multilingual & Spoken Language Selector */}
+          <button
+            onClick={() => setIsLanguageModalOpen(true)}
+            title={
+              languageConfig.autoDetect
+                ? 'Spoken Language: Real-Time Auto-Detect Mode (Click to configure)'
+                : `Spoken Language: Primary ${
+                    SUPPORTED_LANGUAGES.find((l) => l.code === languageConfig.primary)?.name || languageConfig.primary
+                  } • ${languageConfig.secondary?.length || 0} Secondary (Click to configure)`
+            }
+            style={{
+              padding: '7px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: languageConfig.autoDetect ? 'rgba(168, 85, 247, 0.14)' : 'rgba(78, 205, 196, 0.14)',
+              color: languageConfig.autoDetect ? '#C084FC' : '#4ECDC4',
+              border: `1px solid ${languageConfig.autoDetect ? 'rgba(168, 85, 247, 0.35)' : 'rgba(78, 205, 196, 0.35)'}`,
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>🌐</span>
+            <span>
+              {languageConfig.autoDetect
+                ? 'Auto'
+                : `${languageConfig.primary.split('-')[0].toUpperCase()}${
+                    languageConfig.secondary && languageConfig.secondary.length > 0
+                      ? ` +${languageConfig.secondary.length}`
+                      : ''
+                  }`}
+            </span>
+          </button>
+
           {/* Writing Style Selector Custom Popup */}
           <div ref={styleMenuRef} style={{ position: 'relative' }}>
             <button
               onClick={() => setIsStyleMenuOpen(!isStyleMenuOpen)}
               title={`AI Writing Style: ${WRITING_STYLES.find((s) => s.id === currentStyle)?.label || currentStyle} (Click to change)`}
               style={{
-                padding: '8px 10px',
-                fontSize: 12,
+                padding: '7px 9px',
+                fontSize: 11,
                 fontWeight: 600,
                 backgroundColor: 'rgba(255, 171, 0, 0.15)',
                 color: '#FFAB00',
                 border: '1px solid rgba(255, 171, 0, 0.35)',
-                borderRadius: 8,
+                borderRadius: 7,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 5,
+                gap: 4,
                 transition: 'all 0.15s ease',
               }}
             >
               <span>{WRITING_STYLES.find((s) => s.id === currentStyle)?.icon || '✒️'}</span>
               <span>{WRITING_STYLES.find((s) => s.id === currentStyle)?.short || 'Mixed'}</span>
-              <span style={{ fontSize: 9, opacity: 0.7 }}>{isStyleMenuOpen ? '▲' : '▼'}</span>
+              <span style={{ fontSize: 8, opacity: 0.7 }}>{isStyleMenuOpen ? '▲' : '▼'}</span>
             </button>
 
             {isStyleMenuOpen && (
@@ -3022,6 +4424,30 @@ export function Whiteboard({
                       onClick={() => {
                         onSelectStyle?.(style.id);
                         setIsStyleMenuOpen(false);
+                        if (room && room.state === 'connected') {
+                          try {
+                            room.localParticipant.setMetadata(
+                              JSON.stringify({
+                                voice: currentVoice,
+                                style: style.id,
+                                model: currentModel,
+                                thinkingLevel: currentThinkingLevel,
+                                verbosity,
+                                vocalTone,
+                                learnerProfile,
+        languageConfig,
+                              })
+                            );
+                            const payload = JSON.stringify({
+                              type: 'change_writing_style',
+                              style: style.id,
+                            });
+                            const encoder = new TextEncoder();
+                            room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+                          } catch (err) {
+                            console.error('>>> [FRONTEND] Failed to publish change_writing_style:', err);
+                          }
+                        }
                       }}
                       style={{
                         display: 'flex',
@@ -3055,18 +4481,70 @@ export function Whiteboard({
             )}
           </div>
 
+          {/* Gemini API Key Settings */}
+          <button
+            onClick={() => setIsApiKeyModalOpen(true)}
+            title={
+              apiKeyStatus?.configured
+                ? `Gemini API Key Configured (${apiKeyStatus.maskedKey || 'Active'}) — Click to Test, Change, or Delete`
+                : 'Configure Gemini API Key'
+            }
+            style={{
+              padding: '7px 9px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: apiKeyStatus?.configured
+                ? 'rgba(56, 239, 125, 0.14)'
+                : 'rgba(255, 171, 0, 0.2)',
+              color: apiKeyStatus?.configured ? '#6EE7B7' : '#FFD54F',
+              border: apiKeyStatus?.configured
+                ? '1px solid rgba(56, 239, 125, 0.35)'
+                : '1px solid rgba(255, 171, 0, 0.45)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <span>🔑</span>
+            <span>API Key</span>
+          </button>
+
+          {/* Reset AI Memory / Context */}
+          <button
+            onClick={handleResetAIMemory}
+            title="Reset AI Memory (Start New Conversation with Fresh Context)"
+            style={{
+              padding: '7px 9px',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: 'rgba(255, 107, 107, 0.16)',
+              color: '#FF6B6B',
+              border: '1px solid rgba(255, 107, 107, 0.35)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>🔄</span>
+          </button>
+
           {/* Diagnostics */}
           <button
             onClick={toggleDebugOverlay}
             title="Toggle Diagnostics Overlay"
             style={{
-              padding: '8px 10px',
+              padding: '7px 9px',
               fontSize: 12,
               fontWeight: 500,
               backgroundColor: showDebugOverlay ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.07)',
               color: '#aaa',
               border: '1px solid rgba(255, 255, 255, 0.12)',
-              borderRadius: 8,
+              borderRadius: 7,
               cursor: 'pointer',
             }}
           >
@@ -3074,22 +4552,29 @@ export function Whiteboard({
           </button>
         </div>
 
-        {/* Separator */}
-        <div style={{ minWidth: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
-
-        {/* ── Group 5: Zoom Controls ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {/* ── Island 5: Zoom & Live Auto-Follow Controls Dock ── */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            padding: '4px 6px',
+            borderRadius: 10,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+          }}
+        >
           <button
             onClick={zoomOut}
             title="Zoom Out"
             style={{
-              width: 32,
-              height: 32,
+              width: 28,
+              height: 28,
               borderRadius: 6,
               border: 'none',
               backgroundColor: 'rgba(255, 255, 255, 0.08)',
               color: '#fff',
-              fontSize: 16,
+              fontSize: 15,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -3103,9 +4588,9 @@ export function Whiteboard({
           <span
             style={{
               color: '#4ECDC4',
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: 600,
-              minWidth: 42,
+              minWidth: 38,
               textAlign: 'center',
               fontFamily: 'monospace',
             }}
@@ -3117,13 +4602,13 @@ export function Whiteboard({
             onClick={zoomIn}
             title="Zoom In"
             style={{
-              width: 32,
-              height: 32,
+              width: 28,
+              height: 28,
               borderRadius: 6,
               border: 'none',
               backgroundColor: 'rgba(255, 255, 255, 0.08)',
               color: '#fff',
-              fontSize: 16,
+              fontSize: 15,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -3136,25 +4621,57 @@ export function Whiteboard({
 
           <button
             onClick={resetZoom}
-            title="Reset View"
+            title="Reset View to Fit Whiteboard"
             style={{
-              padding: '0 10px',
-              height: 32,
+              padding: '0 8px',
+              height: 28,
               borderRadius: 6,
               border: 'none',
               backgroundColor: 'rgba(255, 255, 255, 0.08)',
               color: '#ccc',
-              fontSize: 12,
+              fontSize: 11,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: 4,
-              marginLeft: 4,
               fontFamily: "'Inter', sans-serif",
             }}
           >
+            <span>🖼️</span>
+            <span>Fit</span>
+          </button>
+
+          {/* Toggle Live Writing Auto-Follow Camera */}
+          <button
+            onClick={toggleAutoFollow}
+            title={
+              isAutoFollowEnabled
+                ? 'Live Writing Auto-Follow is ON: Camera smoothly follows AI writing when zoomed in (Click to turn OFF)'
+                : 'Live Writing Auto-Follow is OFF: Camera stays fixed where you place it (Click to turn ON)'
+            }
+            style={{
+              padding: '0 9px',
+              height: 28,
+              borderRadius: 6,
+              border: isAutoFollowEnabled
+                ? '1px solid rgba(78, 205, 196, 0.55)'
+                : '1px solid rgba(255, 255, 255, 0.14)',
+              backgroundColor: isAutoFollowEnabled
+                ? 'rgba(78, 205, 196, 0.22)'
+                : 'rgba(255, 255, 255, 0.06)',
+              color: isAutoFollowEnabled ? '#4ECDC4' : '#94A3B8',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              fontFamily: "'Inter', sans-serif",
+              transition: 'all 0.15s ease',
+            }}
+          >
             <span>🎯</span>
-            <span>Reset</span>
+            <span>{isAutoFollowEnabled ? 'Follow ON' : 'Follow OFF'}</span>
           </button>
         </div>
       </div>
@@ -3222,7 +4739,18 @@ export function Whiteboard({
           if (room && room.state === 'connected') {
             try {
               // Update participant metadata so the reconnected agent reads the new voice
-              room.localParticipant.setMetadata(JSON.stringify({ voice: newVoice, style: currentStyle, model: currentModel, thinkingLevel: currentThinkingLevel }));
+              room.localParticipant.setMetadata(
+                JSON.stringify({
+                  voice: newVoice,
+                  style: currentStyle,
+                  model: currentModel,
+                  thinkingLevel: currentThinkingLevel,
+                  verbosity,
+                  vocalTone,
+                  learnerProfile,
+        languageConfig,
+                })
+              );
               
               const payload = JSON.stringify({ type: 'change_voice', voice: newVoice });
               const encoder = new TextEncoder();
@@ -3260,6 +4788,10 @@ export function Whiteboard({
                   style: currentStyle,
                   model: newModel,
                   thinkingLevel: newThinkingLevel || 'high',
+                  verbosity,
+                  vocalTone,
+                  learnerProfile,
+        languageConfig,
                 })
               );
 
@@ -3279,6 +4811,127 @@ export function Whiteboard({
           const lvlText = newThinkingLevel ? ` (${newThinkingLevel.toUpperCase()})` : '';
           setSaveToast(`🤖 Model switched to ${chosen?.name || newModel}${lvlText} - History Preserved`);
           setTimeout(() => setSaveToast(null), 3500);
+        }}
+      />
+
+      {/* Live Speaking Style, Vocal Tone & Persona Studio Modal */}
+      <PersonaSelectorModal
+        isOpen={isPersonaModalOpen}
+        onClose={() => setIsPersonaModalOpen(false)}
+        verbosity={verbosity}
+        vocalTone={vocalTone}
+        learnerProfile={learnerProfile}
+        onUpdateSpeakingStyle={(next) => {
+          onUpdateSpeakingStyle?.(next);
+          if (room && room.state === 'connected') {
+            try {
+              room.localParticipant.setMetadata(
+                JSON.stringify({
+                  voice: currentVoice,
+                  style: currentStyle,
+                  model: currentModel,
+                  thinkingLevel: currentThinkingLevel,
+                  verbosity: next.verbosity,
+                  vocalTone: next.vocalTone,
+                  learnerProfile: next.learnerProfile,
+                })
+              );
+
+              const payload = JSON.stringify({
+                type: 'change_speaking_style',
+                verbosity: next.verbosity,
+                vocalTone: next.vocalTone,
+                learnerProfile: next.learnerProfile,
+                style: currentStyle,
+              });
+              const encoder = new TextEncoder();
+              room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+              console.log('>>> [FRONTEND] Broadcasted change_speaking_style live to agent:', next);
+            } catch (err) {
+              console.error('>>> [FRONTEND] Failed to publish change_speaking_style:', err);
+            }
+          }
+          const vLabel = VERBOSITY_OPTIONS.find((v) => v.id === next.verbosity)?.shortLabel || next.verbosity;
+          const tLabel = VOCAL_TONE_OPTIONS.find((t) => t.id === next.vocalTone)?.shortLabel || next.vocalTone;
+          const pLabel = LEARNER_PROFILE_OPTIONS.find((p) => p.id === next.learnerProfile)?.shortLabel || next.learnerProfile;
+          setSaveToast(`🎭 Live Style Synced: ${vLabel} • ${tLabel} • ${pLabel}`);
+          setTimeout(() => setSaveToast(null), 3000);
+        }}
+      />
+
+      {/* Multilingual & Spoken Language Configuration Modal */}
+      <LanguageSelectorModal
+        isOpen={isLanguageModalOpen}
+        onClose={() => setIsLanguageModalOpen(false)}
+        config={languageConfig}
+        onSaveConfig={(nextConfig) => {
+          onUpdateLanguageConfig?.(nextConfig);
+          if (room && room.state === 'connected') {
+            try {
+              room.localParticipant.setMetadata(
+                JSON.stringify({
+                  voice: currentVoice,
+                  style: currentStyle,
+                  model: currentModel,
+                  thinkingLevel: currentThinkingLevel,
+                  verbosity,
+                  vocalTone,
+                  learnerProfile,
+                  languageConfig: nextConfig,
+                })
+              );
+
+              const payload = JSON.stringify({
+                type: 'change_language_config',
+                languageConfig: nextConfig,
+              });
+              const encoder = new TextEncoder();
+              room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+              console.log('>>> [FRONTEND] Broadcasted change_language_config live to agent:', nextConfig);
+            } catch (err) {
+              console.error('>>> [FRONTEND] Failed to publish change_language_config:', err);
+            }
+          }
+          const toastMsg = nextConfig.autoDetect
+            ? '🌐 Language Mode: Auto-Detect Active'
+            : `🌐 Language Updated: ${
+                SUPPORTED_LANGUAGES.find((l) => l.code === nextConfig.primary)?.name || nextConfig.primary
+              } (${nextConfig.secondary?.length || 0} Secondary)`;
+          setSaveToast(toastMsg);
+          setTimeout(() => setSaveToast(null), 3000);
+        }}
+      />
+
+      {/* In-App Gemini API Key Management Modal (Test, Change, Delete) */}
+      <ApiKeyManagerModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        keyStatus={apiKeyStatus}
+        onKeyUpdated={(nextStatus) => {
+          onApiKeyUpdated?.(nextStatus);
+          if (room && room.state === 'connected') {
+            try {
+              const payload = JSON.stringify({
+                type: 'update_api_key',
+                timestamp: Date.now(),
+              });
+              const encoder = new TextEncoder();
+              room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+            } catch (err) {
+              console.error('>>> [FRONTEND] Failed to publish update_api_key:', err);
+            }
+          }
+          showToast('🔑 Gemini API Key verified & synced live!');
+        }}
+        onKeyDeleted={() => {
+          if (room && room.state === 'connected') {
+            try {
+              room.disconnect();
+            } catch {
+              // ignore
+            }
+          }
+          onApiKeyDeleted?.();
         }}
       />
     </div>

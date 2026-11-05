@@ -1,12 +1,11 @@
 # AI Tutor Voice Agent Dependencies
-livekit>=1.1.0
-livekit-agents>=1.6.0
-livekit-plugins-google>=1.6.0
-google-genai>=2.0.0
+livekit>=1.1.21
+livekit-agents>=1.8.10
+livekit-plugins-google>=1.8.10
+google-genai>=2.34.0
 python-dotenv>=1.0.0
 websockets>=13.0.0
 pillow>=10.0.0
 numpy>=1.26.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
-

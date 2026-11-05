@@ -114,6 +114,17 @@ export class DiagramLayoutEngine {
     // Fit newly generated shapes into safe blackboard viewport/slot
     const fittedShapes = this.fitToViewport(shapes, options);
 
+    const diagTitle = (options.title || options.root || '').trim();
+    if (diagTitle) {
+      for (const s of fittedShapes) {
+        s.options = {
+          ...s.options,
+          diagramTitle: diagTitle,
+          diagramType: dType,
+        };
+      }
+    }
+
     // Attach to existing node if attachToNode is specified
     if (options.attachToNode && options.existingShapes && options.existingShapes.length > 0) {
       const matchLabel = options.attachToNode.trim().toLowerCase();
@@ -136,8 +147,13 @@ export class DiagramLayoutEngine {
           let endX: number;
           let endY: number;
 
-          // If new diagram is primarily to the right
-          if (firstRect.x >= parentShape.x + pw) {
+          // If new diagram is primarily above parentShape (upward flow)
+          if (firstRect.y + fh <= parentShape.y) {
+            startX = parentShape.x + Math.round(pw / 2);
+            startY = parentShape.y;
+            endX = firstRect.x + Math.round(fw / 2);
+            endY = firstRect.y + fh;
+          } else if (firstRect.x >= parentShape.x + pw) {
             startX = parentShape.x + pw;
             startY = parentShape.y + Math.round(ph / 2);
             endX = firstRect.x;
@@ -180,6 +196,15 @@ export class DiagramLayoutEngine {
     }
 
     return fittedShapes;
+  }
+  public static calculateItemLines(text: string, maxWidth: number, fontSize: number): number {
+    const charsPerLine = Math.max(16, Math.floor(maxWidth / (fontSize * 0.58)));
+    const paragraphs = text.split('\n');
+    let totalLines = 0;
+    for (const p of paragraphs) {
+      totalLines += Math.max(1, Math.ceil(p.length / charsPerLine));
+    }
+    return totalLines;
   }
 
   /**
@@ -402,28 +427,68 @@ export class DiagramLayoutEngine {
       if (child.items && child.items.length > 0) {
         const itemStartY = childY + child.boxHeight + 32; // 32px safe clearance from bottom border
         const itemX = currentX;
+        const fontSize = isHandwriting ? 21 : 18;
+        const maxWidth = child.colWidth + 20;
+        let currentItemY = itemStartY;
 
-        child.items.forEach((item, itemIdx) => {
+        child.items.forEach((item) => {
           const itemText = item.startsWith('•') || item.startsWith('-') ? item : `• ${item}`;
           shapes.push({
             kind: 'shape',
             shapeType: 'text',
             x: itemX,
-            y: itemStartY + itemIdx * (isHandwriting ? 34 : 32), // vertical spacing
+            y: currentItemY,
             options: {
               text: itemText,
-              fontSize: isHandwriting ? 21 : 18,
+              fontSize,
               color: 'rgba(255, 255, 255, 0.9)',
-              maxWidth: child.colWidth + 20,
+              maxWidth,
               writingStyle: isHandwriting ? 'handwriting' : 'normal',
               fontFamily: isHandwriting ? "'Caveat', cursive, sans-serif" : undefined,
             },
           });
+
+          const totalLines = this.calculateItemLines(itemText, maxWidth, fontSize);
+          const lineSpacing = isHandwriting ? 28 : 25;
+          const itemHeight = totalLines * lineSpacing + (isHandwriting ? 14 : 12);
+          currentItemY += itemHeight;
         });
       }
 
       currentX += child.colWidth + branchGap;
     });
+
+    // Support Concept Card / Single-Container bullet items when no child nodes exist
+    if (childBoxes.length === 0 && options.items && options.items.length > 0) {
+      const itemStartY = rootY + rootBox.height + 28;
+      const itemX = rootX;
+      const fontSize = isHandwriting ? 21 : 18;
+      const maxWidth = rootBox.width + 100;
+      let currentItemY = itemStartY;
+
+      options.items.forEach((item) => {
+        const itemText = item.startsWith('•') || item.startsWith('-') ? item : `• ${item}`;
+        shapes.push({
+          kind: 'shape',
+          shapeType: 'text',
+          x: itemX,
+          y: currentItemY,
+          options: {
+            text: itemText,
+            fontSize,
+            color: 'rgba(255, 255, 255, 0.9)',
+            maxWidth,
+            writingStyle: isHandwriting ? 'handwriting' : 'normal',
+            fontFamily: isHandwriting ? "'Caveat', cursive, sans-serif" : undefined,
+          },
+        });
+
+        const totalLines = this.calculateItemLines(itemText, maxWidth, fontSize);
+        const lineSpacing = isHandwriting ? 28 : 25;
+        const itemHeight = totalLines * lineSpacing + (isHandwriting ? 14 : 12);
+        currentItemY += itemHeight;
+      });
+    }
 
     return shapes;
   }
@@ -451,7 +516,7 @@ export class DiagramLayoutEngine {
     const nodeBoxes = nodes.map((n, idx) => {
       const stepNum = idx + 1;
       const fullLabel = n.label.startsWith('Step') || /^\d+\./.test(n.label) ? n.label : `${stepNum}. ${n.label}`;
-      const isBoxWide = !isBaseHorizontal || n.flow === 'down';
+      const isBoxWide = !isBaseHorizontal || n.flow === 'down' || n.flow === 'up';
       const box = calculateNodeBoxSize(fullLabel, isHandwriting ? 22 : 20, isBoxWide ? 220 : 180, 24, isHandwriting);
       return {
         ...n,
@@ -479,7 +544,7 @@ export class DiagramLayoutEngine {
     const placedSteps: PlacedStep[] = [];
     const startX = isBaseHorizontal ? 180 : 860;
     const startY = isBaseHorizontal ? 240 : 180;
-    let currentFlow: 'right' | 'down' | 'left' = isBaseHorizontal ? 'right' : 'down';
+    let currentFlow: 'right' | 'down' | 'left' | 'up' = isBaseHorizontal ? 'right' : 'down';
 
     const gapX = 65;
     const gapY = 70;
@@ -519,6 +584,9 @@ export class DiagramLayoutEngine {
         } else if (currentFlow === 'left') {
           newX = prev.x - node.boxWidth - gapX;
           newY = prev.y;
+        } else if (currentFlow === 'up') {
+          newX = prev.x + Math.round((prev.width - node.boxWidth) / 2);
+          newY = prev.y - node.boxHeight - gapY;
         }
 
         if (node.flow && node.flow !== 'auto') {
@@ -566,7 +634,7 @@ export class DiagramLayoutEngine {
         const dy = next.y - step.y;
 
         if (dx > 0 && Math.abs(dy) < 25) {
-          // Direct horizontal arrow
+          // Direct horizontal arrow (Left to Right)
           shapes.push({
             kind: 'shape',
             shapeType: 'arrow',
@@ -581,8 +649,24 @@ export class DiagramLayoutEngine {
               writingStyle: isHandwriting ? 'handwriting' : 'normal',
             },
           });
+        } else if (dx < 0 && Math.abs(dy) < 25) {
+          // Direct horizontal arrow (Right to Left)
+          shapes.push({
+            kind: 'shape',
+            shapeType: 'arrow',
+            x: step.x,
+            y: step.y + Math.round(step.height / 2),
+            toX: next.x + next.width,
+            toY: next.y + Math.round(next.height / 2),
+            options: {
+              color: '#FFFFFF',
+              strokeWidth: isHandwriting ? 2.2 : 2,
+              roughness: isHandwriting ? 1.8 : 1,
+              writingStyle: isHandwriting ? 'handwriting' : 'normal',
+            },
+          });
         } else if (Math.abs(dx) < 35 && dy > 0) {
-          // Direct vertical arrow
+          // Direct vertical arrow (Top to Bottom)
           shapes.push({
             kind: 'shape',
             shapeType: 'arrow',
@@ -590,6 +674,22 @@ export class DiagramLayoutEngine {
             y: step.y + step.height,
             toX: next.x + Math.round(next.width / 2),
             toY: next.y,
+            options: {
+              color: '#FFFFFF',
+              strokeWidth: isHandwriting ? 2.2 : 2,
+              roughness: isHandwriting ? 1.8 : 1,
+              writingStyle: isHandwriting ? 'handwriting' : 'normal',
+            },
+          });
+        } else if (Math.abs(dx) < 35 && dy < 0) {
+          // Direct vertical arrow (Bottom to Top)
+          shapes.push({
+            kind: 'shape',
+            shapeType: 'arrow',
+            x: step.x + Math.round(step.width / 2),
+            y: step.y,
+            toX: next.x + Math.round(next.width / 2),
+            toY: next.y + next.height,
             options: {
               color: '#FFFFFF',
               strokeWidth: isHandwriting ? 2.2 : 2,
@@ -632,14 +732,52 @@ export class DiagramLayoutEngine {
               writingStyle: isHandwriting ? 'handwriting' : 'normal',
             },
           });
-        } else {
-          // General orthogonal fallback arrow
+        } else if (dx < 0 && dy >= 25) {
+          // L-shaped Orthogonal Elbow Connector (Vertical down then turning Left)
+          const elbowX = step.x + Math.round(step.width / 2);
+          const elbowY = next.y + Math.round(next.height / 2);
+
+          // Line from bottom of step down to elbow point
+          shapes.push({
+            kind: 'shape',
+            shapeType: 'line',
+            x: elbowX,
+            y: step.y + step.height,
+            toX: elbowX,
+            toY: elbowY,
+            options: {
+              color: '#FFFFFF',
+              strokeWidth: isHandwriting ? 2.2 : 2,
+              roughness: isHandwriting ? 1.8 : 1,
+            },
+          });
+
+          // Arrow from elbow point horizontally left into right edge of next step
           shapes.push({
             kind: 'shape',
             shapeType: 'arrow',
-            x: step.x + step.width,
+            x: elbowX,
+            y: elbowY,
+            toX: next.x + next.width,
+            toY: elbowY,
+            options: {
+              color: '#FFFFFF',
+              strokeWidth: isHandwriting ? 2.2 : 2,
+              roughness: isHandwriting ? 1.8 : 1,
+              writingStyle: isHandwriting ? 'handwriting' : 'normal',
+            },
+          });
+        } else {
+          // General clean orthogonal connector
+          const fromRight = next.x > step.x + step.width;
+          const startPtX = fromRight ? step.x + step.width : step.x;
+          const endPtX = fromRight ? next.x : next.x + next.width;
+          shapes.push({
+            kind: 'shape',
+            shapeType: 'arrow',
+            x: startPtX,
             y: step.y + Math.round(step.height / 2),
-            toX: next.x,
+            toX: endPtX,
             toY: next.y + Math.round(next.height / 2),
             options: {
               color: '#FFFFFF',
@@ -653,21 +791,31 @@ export class DiagramLayoutEngine {
       // Sub-items below step box (if no branching sub-tree)
       if (step.items && step.items.length > 0 && (!step.children || step.children.length === 0)) {
         const itemStartY = step.y + step.height + 28;
-        step.items.forEach((itm, itemIdx) => {
+        const fontSize = isHandwriting ? 20 : 17;
+        const maxWidth = step.width + 40;
+        let currentItemY = itemStartY;
+
+        step.items.forEach((itm) => {
+          const itemText = itm.startsWith('•') ? itm : `• ${itm}`;
           shapes.push({
             kind: 'shape',
             shapeType: 'text',
             x: step.x,
-            y: itemStartY + itemIdx * (isHandwriting ? 30 : 28),
+            y: currentItemY,
             options: {
-              text: itm.startsWith('•') ? itm : `• ${itm}`,
-              fontSize: isHandwriting ? 20 : 17,
+              text: itemText,
+              fontSize,
               color: 'rgba(255, 255, 255, 0.85)',
-              maxWidth: step.width + 40,
+              maxWidth,
               writingStyle: isHandwriting ? 'handwriting' : 'normal',
               fontFamily: isHandwriting ? "'Caveat', cursive, sans-serif" : undefined,
             },
           });
+
+          const totalLines = this.calculateItemLines(itemText, maxWidth, fontSize);
+          const lineSpacing = isHandwriting ? 26 : 23;
+          const itemHeight = totalLines * lineSpacing + (isHandwriting ? 12 : 10);
+          currentItemY += itemHeight;
         });
       }
 
@@ -738,22 +886,31 @@ export class DiagramLayoutEngine {
           // Child Bullet items
           if (child.items && child.items.length > 0) {
             const itemStartY = branchY + child.boxHeight + 28;
-            child.items.forEach((item, itemIdx) => {
+            const fontSize = isHandwriting ? 20 : 17;
+            const maxWidth = child.colWidth + 20;
+            let currentItemY = itemStartY;
+
+            child.items.forEach((item) => {
               const itemText = item.startsWith('•') || item.startsWith('-') ? item : `• ${item}`;
               shapes.push({
                 kind: 'shape',
                 shapeType: 'text',
                 x: bCurrentX,
-                y: itemStartY + itemIdx * (isHandwriting ? 32 : 28),
+                y: currentItemY,
                 options: {
                   text: itemText,
-                  fontSize: isHandwriting ? 20 : 17,
+                  fontSize,
                   color: 'rgba(255, 255, 255, 0.9)',
-                  maxWidth: child.colWidth + 20,
+                  maxWidth,
                   writingStyle: isHandwriting ? 'handwriting' : 'normal',
                   fontFamily: isHandwriting ? "'Caveat', cursive, sans-serif" : undefined,
                 },
               });
+
+              const totalLines = this.calculateItemLines(itemText, maxWidth, fontSize);
+              const lineSpacing = isHandwriting ? 26 : 23;
+              const itemHeight = totalLines * lineSpacing + (isHandwriting ? 12 : 10);
+              currentItemY += itemHeight;
             });
           }
 
@@ -810,21 +967,31 @@ export class DiagramLayoutEngine {
       // Comparison Items inside card
       if (col.items && col.items.length > 0) {
         const itemStartY = startY + (isHandwriting ? 68 : 60) + 32;
-        col.items.forEach((item, itmIdx) => {
+        const fontSize = isHandwriting ? 22 : 19;
+        const maxWidth = cardWidth - 32;
+        let currentItemY = itemStartY;
+
+        col.items.forEach((item) => {
+          const itemText = item.startsWith('•') || item.startsWith('-') ? item : `• ${item}`;
           shapes.push({
             kind: 'shape',
             shapeType: 'text',
             x: colX + 16,
-            y: itemStartY + itmIdx * (isHandwriting ? 36 : 34),
+            y: currentItemY,
             options: {
-              text: item.startsWith('•') || item.startsWith('-') ? item : `• ${item}`,
-              fontSize: isHandwriting ? 22 : 19,
+              text: itemText,
+              fontSize,
               color: 'rgba(255, 255, 255, 0.95)',
-              maxWidth: cardWidth - 32,
+              maxWidth,
               writingStyle: isHandwriting ? 'handwriting' : 'normal',
               fontFamily: isHandwriting ? "'Caveat', cursive, sans-serif" : undefined,
             },
           });
+
+          const totalLines = this.calculateItemLines(itemText, maxWidth, fontSize);
+          const lineSpacing = isHandwriting ? 28 : 25;
+          const itemHeight = totalLines * lineSpacing + (isHandwriting ? 14 : 12);
+          currentItemY += itemHeight;
         });
       }
     });
@@ -885,12 +1052,63 @@ export class DiagramLayoutEngine {
     let targetMinY = SAFE_MIN_Y;
     let targetMaxY = SAFE_MAX_Y;
 
+    const existing = options?.existingShapes;
+
     // 2. Region / Slot Allocation (Collision avoidance & placement)
     if (options?.x !== undefined && options?.y !== undefined) {
-      targetMinX = Math.max(SAFE_MIN_X, options.x);
-      targetMinY = Math.max(SAFE_MIN_Y, options.y);
-      const targetW = options.width && options.width > 50 ? options.width : Math.min(totalW, SAFE_MAX_X - targetMinX);
-      const targetH = options.height && options.height > 50 ? options.height : Math.min(totalH, SAFE_MAX_Y - targetMinY);
+      let reqX = Math.max(SAFE_MIN_X, options.x);
+      let reqY = Math.max(SAFE_MIN_Y, options.y);
+      const targetW = options.width && options.width > 50 ? options.width : Math.min(totalW, SAFE_MAX_X - reqX);
+      const targetH = options.height && options.height > 50 ? options.height : Math.min(totalH, SAFE_MAX_Y - reqY);
+
+      // Intelligent Anti-Collision Guard: unless preserveExactPosition is requested, prevent overlap with existing blackboard content
+      if (!options?.preserveExactPosition && existing && existing.length > 0) {
+        const collidingObstacles = existing.filter((s) => {
+          if (s.shapeType === 'line' || s.shapeType === 'arrow') return false;
+          const sx = s.x ?? 0;
+          const sy = s.y ?? 0;
+          const sw = s.width ?? (s.options?.maxWidth ?? 160);
+          const sh = s.height ?? (s.options?.fontSize ? s.options.fontSize * 1.8 : 45);
+          if (sw <= 0 || sh <= 0) return false;
+          return (
+            reqX < sx + sw - 5 &&
+            reqX + targetW > sx + 5 &&
+            reqY < sy + sh - 5 &&
+            reqY + targetH > sy + 5
+          );
+        });
+
+        if (collidingObstacles.length > 0) {
+          const maxCollidingBottom = Math.max(
+            ...collidingObstacles.map((s) => {
+              const sy = s.y ?? 0;
+              const sh = s.height ?? (s.options?.fontSize ? s.options.fontSize * 1.8 : 45);
+              return sy + sh;
+            })
+          );
+
+          const shiftedY = maxCollidingBottom + 35;
+          if (shiftedY + targetH <= SAFE_MAX_Y) {
+            reqY = shiftedY;
+          } else if (reqX < 950 && SAFE_MAX_X - 980 >= Math.min(targetW, 350)) {
+            const rObstacles = existing.filter((s) => {
+              if (s.shapeType === 'line' || s.shapeType === 'arrow') return false;
+              const sx = s.x ?? 0;
+              const sw = s.width ?? 160;
+              return sx + sw > 960;
+            });
+            if (rObstacles.length === 0) {
+              reqX = 980;
+              reqY = SAFE_MIN_Y;
+            } else {
+              reqY = Math.max(SAFE_MIN_Y, SAFE_MAX_Y - targetH);
+            }
+          }
+        }
+      }
+
+      targetMinX = reqX;
+      targetMinY = reqY;
       targetMaxX = Math.min(SAFE_MAX_X, targetMinX + targetW);
       targetMaxY = Math.min(SAFE_MAX_Y, targetMinY + targetH);
     } else if (options?.position === 'left') {
@@ -909,9 +1127,12 @@ export class DiagramLayoutEngine {
       targetMinY = SAFE_MIN_Y;
       targetMaxY = 510;
     } else if (options?.position === 'bottom') {
+      const maxExBottom = (existing && existing.length > 0)
+        ? Math.max(0, ...existing.map((s) => (s.shapeType === 'line' || s.shapeType === 'arrow') ? 0 : (s.y ?? 0) + (s.height ?? ((s.options?.fontSize || 20) * 1.8))))
+        : 0;
       targetMinX = SAFE_MIN_X;
       targetMaxX = SAFE_MAX_X;
-      targetMinY = 550;
+      targetMinY = maxExBottom > SAFE_MIN_Y ? Math.min(SAFE_MAX_Y - totalH, maxExBottom + 35) : 550;
       targetMaxY = SAFE_MAX_Y;
     } else if (options?.position === 'center') {
       targetMinX = SAFE_MIN_X;
@@ -920,7 +1141,6 @@ export class DiagramLayoutEngine {
       targetMaxY = SAFE_MAX_Y;
     } else {
       // Auto collision-aware slot allocation
-      const existing = options?.existingShapes;
       if (existing && existing.length > 0) {
         let exMinX = Infinity;
         let exMaxX = -Infinity;
@@ -929,6 +1149,8 @@ export class DiagramLayoutEngine {
         let validShapeCount = 0;
 
         for (const s of existing) {
+          // Ignore titles and header text (y <= 130 or style === 'title') when calculating body bounding box
+          if ((s.y ?? 0) <= 130 || (s as any).style === 'title' || s.options?.style === 'title') continue;
           if (s.shapeType === 'line' || s.shapeType === 'arrow') {
             const toX = s.toX ?? s.x;
             const toY = s.toY ?? s.y;
@@ -964,29 +1186,36 @@ export class DiagramLayoutEngine {
           }
 
           if (attachedNode) {
-            const nodeCenterX = attachedNode.x + (attachedNode.width ?? 140) / 2;
+            const nodeRightX = attachedNode.x + (attachedNode.width ?? 140);
             const nodeBottomY = attachedNode.y + (attachedNode.height ?? 50);
+            const firstNodeFlow = (options.nodes && options.nodes.length > 0) ? options.nodes[0].flow : 'auto';
 
-            if (nodeCenterX < 900 && SAFE_MAX_X - exMaxX >= 480) {
-              // Space available on right
-              targetMinX = Math.max(980, exMaxX + 50);
+            if (firstNodeFlow === 'up') {
+              // Upward continuation: allocate zone above attachedNode
+              targetMinX = Math.max(SAFE_MIN_X, attachedNode.x - 300);
+              targetMaxX = Math.min(SAFE_MAX_X, nodeRightX + 300);
+              targetMinY = SAFE_MIN_Y;
+              targetMaxY = Math.max(SAFE_MIN_Y + 140, attachedNode.y - 25);
+            } else if (SAFE_MAX_X - nodeRightX >= 460) {
+              // Space available directly to the right of attachedNode
+              targetMinX = nodeRightX + 35;
               targetMaxX = SAFE_MAX_X;
-              targetMinY = Math.max(SAFE_MIN_Y, attachedNode.y - 40);
+              targetMinY = Math.max(SAFE_MIN_Y, attachedNode.y - 50);
+              targetMaxY = Math.min(SAFE_MAX_Y, nodeBottomY + 340);
+            } else if (SAFE_MAX_Y - nodeBottomY >= 240) {
+              // Space available directly below attachedNode
+              targetMinX = Math.max(SAFE_MIN_X, attachedNode.x - 250);
+              targetMaxX = Math.min(SAFE_MAX_X, nodeRightX + 250);
+              targetMinY = nodeBottomY + 35;
               targetMaxY = SAFE_MAX_Y;
-            } else if (SAFE_MAX_Y - exMaxY >= 320) {
-              // Space available on bottom
+            } else if (attachedNode.x - SAFE_MIN_X >= 460) {
+              // Space available directly to the left of attachedNode
               targetMinX = SAFE_MIN_X;
-              targetMaxX = SAFE_MAX_X;
-              targetMinY = Math.max(nodeBottomY + 50, exMaxY + 40);
-              targetMaxY = SAFE_MAX_Y;
-            } else if (nodeCenterX >= 900 && exMinX - SAFE_MIN_X >= 480) {
-              // Space available on left
-              targetMinX = SAFE_MIN_X;
-              targetMaxX = Math.min(940, exMinX - 50);
-              targetMinY = Math.max(SAFE_MIN_Y, attachedNode.y - 40);
-              targetMaxY = SAFE_MAX_Y;
+              targetMaxX = attachedNode.x - 35;
+              targetMinY = Math.max(SAFE_MIN_Y, attachedNode.y - 50);
+              targetMaxY = Math.min(SAFE_MAX_Y, nodeBottomY + 340);
             } else {
-              targetMinX = Math.max(980, exMaxX + 40);
+              targetMinX = SAFE_MIN_X;
               targetMaxX = SAFE_MAX_X;
               targetMinY = SAFE_MIN_Y;
               targetMaxY = SAFE_MAX_Y;
@@ -1059,6 +1288,13 @@ export class DiagramLayoutEngine {
       copy.x = Math.round(targetCenterX + (s.x - currentCenterX) * scale);
       if (copy.width !== undefined) {
         copy.width = Math.round(copy.width * scale);
+        const label = copy.options?.label || copy.label || '';
+        if (label && copy.shapeType === 'rectangle') {
+          const fs = Math.max(14, Math.round((copy.options?.fontSize ?? 20) * scale));
+          const words = label.trim().split(/\s+/);
+          const maxWordW = Math.max(...words.map((w: string) => measureTextWidth(w, fs, true)));
+          copy.width = Math.max(copy.width, maxWordW + 24);
+        }
       }
       if (copy.toX !== undefined) {
         copy.toX = Math.round(targetCenterX + (copy.toX - currentCenterX) * scale);
@@ -1068,6 +1304,21 @@ export class DiagramLayoutEngine {
       copy.y = Math.round(targetStartY + (s.y - minY) * scale);
       if (copy.height !== undefined) {
         copy.height = Math.round(copy.height * scale);
+        const label = copy.options?.label || copy.label || '';
+        if (label && copy.shapeType === 'rectangle') {
+          const fs = Math.max(14, Math.round((copy.options?.fontSize ?? 20) * scale));
+          const singleLineW = measureTextWidth(label, fs, true);
+          // If scaled box width is narrower than single-line text width, words wrap into multiple lines
+          const currentW = copy.width ?? 0;
+          if (currentW < singleLineW + 20) {
+            const words = label.trim().split(/\s+/);
+            const estLines = words.length >= 4 ? 3 : 2;
+            const requiredH = Math.round(estLines * fs * 1.3 + 16);
+            copy.height = Math.max(copy.height, requiredH);
+          } else {
+            copy.height = Math.max(copy.height, Math.round(fs * 1.8 + 14));
+          }
+        }
       }
       if (copy.toY !== undefined) {
         copy.toY = Math.round(targetStartY + (copy.toY - minY) * scale);

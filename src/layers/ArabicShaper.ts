@@ -1,27 +1,20 @@
 /**
- * ArabicShaper — Arabic text contextual shaping and SVG path extraction.
- *
- * This is the core of the Arabic handwriting engine. It transforms raw
- * Unicode Arabic text into SVG path data with correct contextual forms.
+ * ArabicShaper — Text contextual shaping, multi-line list preservation, inline math superscripts, and SVG path extraction.
  *
  * Pipeline:
- * 1. Reshape Arabic characters to positional forms (initial/medial/final/isolated)
- * 2. Load font and extract Bézier curves via opentype.js
- * 3. Generate per-word SVG path data
- * 4. Generate reveal mask paths for stroke-dashoffset animation
- *
- * Why not use <text> elements?
- * - SVG <text> in many browsers doesn't apply full OpenType shaping
- * - Arabic characters appear disconnected without GSUB processing
- * - Path-based rendering guarantees visual fidelity across all browsers
+ * 1. Split text into logical lines (preserving '\n' and separating inline numbered/bulleted lists)
+ * 2. Normalize math notation, symbols, and superscripts/subscripts (^, _, ², ³, etc.)
+ * 3. Load font and extract Bézier curves via opentype.js (blocking .notdef index-0 Tofu glyphs)
+ * 4. Generate per-word SVG path data with lineBreakBefore markers
+ * 5. Generate reveal mask paths for stroke-dashoffset animation
  */
 // @ts-ignore
 import opentype from 'opentype.js';
 import type { ShapedWord, ShapedGlyph, Rect } from '../types';
+import { splitIntoLogicalLines, normalizeProseMathAndSymbols } from '../engine/CollisionDetector';
 
 /**
  * Arabic Unicode ranges and positional form mappings.
- * Maps standard Arabic characters to their Presentation Forms B positions.
  */
 const ARABIC_FORMS: Record<string, { isolated: number; initial: number; medial: number; final: number }> = {
   '\u0627': { isolated: 0xFE8D, initial: 0xFE8D, medial: 0xFE8E, final: 0xFE8E }, // Alef
@@ -59,16 +52,53 @@ const ARABIC_FORMS: Record<string, { isolated: number; initial: number; medial: 
 /** Characters that connect to the following character (right-joining) */
 const RIGHT_JOINING = new Set([
   '\u0627', '\u062F', '\u0630', '\u0631', '\u0632', '\u0648', '\u0649',
-  '\u0629', // These characters don't connect to the left
+  '\u0629',
 ]);
 
-/** Characters that are non-joining (spaces, punctuation, etc.) */
+/** Unicode superscript map to standard ^{...} representation for authentic raised glyph rendering */
+const UNICODE_SUPERSCRIPTS: Record<string, string> = {
+  '⁰': '0',
+  '¹': '1',
+  '²': '2',
+  '³': '3',
+  '⁴': '4',
+  '⁵': '5',
+  '⁶': '6',
+  '⁷': '7',
+  '⁸': '8',
+  '⁹': '9',
+  '⁺': '+',
+  '⁻': '-',
+  'ⁿ': 'n',
+};
+
+/** Fallback map for mathematical or typographic symbols if missing in the active handwriting font */
+const SYMBOL_FALLBACKS: Record<string, string> = {
+  '≡': ':=',
+  '≈': '~=',
+  '≠': '!=',
+  '≤': '<=',
+  '≥': '>=',
+  '→': '->',
+  '⇒': '=>',
+  '↔': '<->',
+  '⇔': '<=>',
+  '−': '-',
+  '–': '-',
+  '—': '-',
+  '•': '-',
+  '●': '-',
+  '▪': '-',
+  '·': '*',
+  '×': 'x',
+  '÷': '/',
+};
+
 const isArabicChar = (c: string): boolean => {
   const code = c.charCodeAt(0);
   return (code >= 0x0600 && code <= 0x06FF) || (code >= 0xFB50 && code <= 0xFDFF) || (code >= 0xFE70 && code <= 0xFEFF);
 };
 
-/** Check if a character is a tashkeel (diacritical mark) */
 const isTashkeel = (c: string): boolean => {
   const code = c.charCodeAt(0);
   return code >= 0x064B && code <= 0x065F;
@@ -83,9 +113,6 @@ export class ArabicShaper {
     this.fontUrl = fontUrl;
   }
 
-  /**
-   * Load the Arabic font. Must be called before any shaping operations.
-   */
   async loadFont(): Promise<void> {
     if (this._isLoaded) return;
 
@@ -108,23 +135,63 @@ export class ArabicShaper {
   }
 
   /**
-   * Reshape Arabic text to use correct positional forms.
-   * Handles initial, medial, final, and isolated forms.
+   * Checks whether the loaded font has a valid glyph (not .notdef index 0) for the given character.
    */
+  public hasGlyph(char: string): boolean {
+    if (!this.font) return false;
+    const glyph = this.font.charToGlyph(char);
+    return Boolean(glyph && glyph.index > 0);
+  }
+
+  /**
+   * Normalizes Unicode superscripts and substitutes any symbol missing from the loaded font
+   * so .notdef Tofu boxes can never appear.
+   */
+  private normalizeForFont(line: string): string {
+    let out = '';
+    const chars = [...line];
+    let i = 0;
+    while (i < chars.length) {
+      const c = chars[i];
+      if (UNICODE_SUPERSCRIPTS[c] !== undefined) {
+        let supGroup = '';
+        while (i < chars.length && UNICODE_SUPERSCRIPTS[chars[i]] !== undefined) {
+          supGroup += UNICODE_SUPERSCRIPTS[chars[i]];
+          i++;
+        }
+        out += `^{${supGroup}}`;
+        continue;
+      }
+
+      if (/\s/.test(c) || c === '^' || c === '_' || c === '{' || c === '}') {
+        out += c;
+        i++;
+        continue;
+      }
+
+      if (this.hasGlyph(c)) {
+        out += c;
+      } else if (SYMBOL_FALLBACKS[c] !== undefined) {
+        out += SYMBOL_FALLBACKS[c];
+      }
+      // Characters that have neither a glyph nor a fallback are silently omitted rather than drawing a .notdef box
+      i++;
+    }
+    return out;
+  }
+
   reshapeText(text: string): string {
-    const chars = [...text]; // Handle multi-byte characters
+    const chars = [...text];
     const result: string[] = [];
 
     for (let i = 0; i < chars.length; i++) {
       const char = chars[i];
 
-      // Skip tashkeel (diacritical marks) — pass through unchanged
       if (isTashkeel(char)) {
         result.push(char);
         continue;
       }
 
-      // Non-Arabic characters pass through unchanged
       if (!isArabicChar(char) || !ARABIC_FORMS[char]) {
         result.push(char);
         continue;
@@ -136,8 +203,6 @@ export class ArabicShaper {
 
       const prevConnects = prevChar !== null && isArabicChar(prevChar) && !RIGHT_JOINING.has(prevChar) && ARABIC_FORMS[prevChar] !== undefined;
       const nextConnects = nextChar !== null && isArabicChar(nextChar) && ARABIC_FORMS[nextChar] !== undefined;
-
-      // Can this character connect to the left?
       const canConnectLeft = !RIGHT_JOINING.has(char);
 
       let form: number;
@@ -158,23 +223,31 @@ export class ArabicShaper {
   }
 
   /**
-   * Shapes text and extracts SVG path data for each word.
-   * This is the main API used by the SVG Overlay layer.
-   *
-   * @param text - Raw Arabic text
-   * @param fontSize - Font size in pixels
-   * @returns Array of ShapedWord objects with path data
+   * Shapes text and extracts SVG path data for each word while preserving logical line breaks
+   * (\n, numbered lists, bullet lists) via lineBreakBefore flags.
    */
   shapeToSVGPaths(text: string, fontSize: number): ShapedWord[] {
     if (!this.font) throw new Error('[ArabicShaper] Font not loaded');
 
-    const words = text.split(/\s+/).filter(Boolean);
+    const logicalLines = splitIntoLogicalLines(text);
     const shapedWords: ShapedWord[] = [];
 
-    for (const word of words) {
-      const shapedWord = this.shapeWord(word, fontSize);
-      shapedWords.push(shapedWord);
-    }
+    logicalLines.forEach((rawLine, lineIdx) => {
+      const normalizedLine = this.normalizeForFont(normalizeProseMathAndSymbols(rawLine));
+      const words = normalizedLine.split(/[ \t]+/).filter(Boolean);
+      let firstValidWordInLine = true;
+
+      for (const word of words) {
+        const shapedWord = this.shapeWord(word, fontSize);
+        if (shapedWord.glyphs.length === 0) continue;
+
+        if (lineIdx > 0 && firstValidWordInLine) {
+          shapedWord.lineBreakBefore = true;
+        }
+        firstValidWordInLine = false;
+        shapedWords.push(shapedWord);
+      }
+    });
 
     return shapedWords;
   }
@@ -185,22 +258,16 @@ export class ArabicShaper {
   private shapeWord(word: string, fontSize: number): ShapedWord {
     if (!this.font) throw new Error('[ArabicShaper] Font not loaded');
 
-    // Check if word contains Arabic characters
     const hasArabic = [...word].some((c) => isArabicChar(c));
 
     let processedText = word;
     if (hasArabic) {
-      // 1. Reshape Arabic to positional forms
       const reshaped = this.reshapeText(word);
-      // 2. Reverse for RTL display (opentype.js renders LTR)
       processedText = [...reshaped].reverse().join('');
     }
 
-    // 3. Extract per-character glyphs
     const glyphs = this.extractGlyphs(processedText, fontSize);
-
-    // 4. Combine paths and calculate overall bounding box
-    const combinedPath = glyphs.map(g => g.pathData).join(' ');
+    const combinedPath = glyphs.map((g) => g.pathData).join(' ');
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     if (glyphs.length > 0) {
@@ -213,19 +280,21 @@ export class ArabicShaper {
     } else {
       minX = 0; minY = 0; maxX = 0; maxY = 0;
     }
-    
+
     const bounds: Rect = {
       x: minX,
       y: minY,
-      width: maxX - minX,
-      height: maxY - minY,
+      width: Math.max(0, maxX - minX),
+      height: Math.max(0, maxY - minY),
     };
 
-    // 5. Generate the reveal mask path (follows natural LTR or RTL writing direction)
     const revealMaskPath = this.generateRevealMaskPath(bounds, fontSize, hasArabic);
 
+    // Clean display text (without raw ^, _, {, } tokens) for accurate timing character count
+    const cleanWordText = word.replace(/[\^_]\{([^}]*)\}/g, '$1').replace(/[\^_]([0-9a-zA-Z+\-])/g, '$1');
+
     return {
-      text: word,
+      text: cleanWordText || word,
       glyphs,
       combinedPath,
       revealMaskPath,
@@ -235,26 +304,27 @@ export class ArabicShaper {
   }
 
   /**
-   * Extract individual glyph paths from the font.
+   * Extracts individual glyph paths from the font, with native support for typographic
+   * superscripts (^x, ^{...}) and subscripts (_x, _{...}) so raw '^' carets never appear.
    */
   private extractGlyphs(text: string, fontSize: number): ShapedGlyph[] {
     if (!this.font) return [];
 
     const glyphs: ShapedGlyph[] = [];
     let xOffset = 0;
+    const chars = [...text];
+    let i = 0;
 
-    for (const char of text) {
-      if (isTashkeel(char)) continue;
-
+    const appendGlyph = (char: string, targetFontSize: number, yOffset: number) => {
+      if (!this.font || isTashkeel(char)) return;
       const glyph = this.font.charToGlyph(char);
-      if (!glyph) continue;
+      // Strictly block .notdef (index 0) Tofu boxes
+      if (!glyph || glyph.index === 0) return;
 
-      const scale = fontSize / this.font.unitsPerEm;
-      // Fix opentype.js bezier math precision bug that outputs NaN for long floats
+      const scale = targetFontSize / this.font.unitsPerEm;
       const safeXOffset = Math.round(xOffset * 100) / 100;
-      const path = glyph.getPath(safeXOffset, 0, fontSize);
-      
-      // Defense in depth: sanitize path data
+      const path = glyph.getPath(safeXOffset, yOffset, targetFontSize);
+
       const pathData = path.toPathData(2).replace(/NaN/g, '0');
       const bbox = path.getBoundingBox();
 
@@ -271,16 +341,46 @@ export class ArabicShaper {
       });
 
       xOffset += (glyph.advanceWidth ?? 0) * scale;
+    };
+
+    while (i < chars.length) {
+      const char = chars[i];
+
+      // Handle Superscript (^) or Subscript (_)
+      if ((char === '^' || char === '_') && i + 1 < chars.length) {
+        const isSup = char === '^';
+        const subSupFontSize = Math.max(14, Math.round(fontSize * 0.68));
+        const yOffset = isSup ? -Math.round(fontSize * 0.36) : Math.round(fontSize * 0.22);
+        i++; // skip '^' or '_'
+
+        if (chars[i] === '{') {
+          i++; // skip '{'
+          while (i < chars.length && chars[i] !== '}') {
+            appendGlyph(chars[i], subSupFontSize, yOffset);
+            i++;
+          }
+          if (i < chars.length && chars[i] === '}') {
+            i++; // skip '}'
+          }
+        } else {
+          // Read contiguous exponent/subscript token (e.g. ^2, ^n, ^-1)
+          let count = 0;
+          while (i < chars.length && count < 4 && /[0-9a-zA-Z+\-]/.test(chars[i])) {
+            appendGlyph(chars[i], subSupFontSize, yOffset);
+            i++;
+            count++;
+          }
+        }
+        continue;
+      }
+
+      appendGlyph(char, fontSize, 0);
+      i++;
     }
 
     return glyphs;
   }
 
-  /**
-   * Generates a reveal mask path for the word.
-   * For Arabic (RTL): horizontal stroke from right to left.
-   * For English / German (LTR): horizontal stroke from left to right.
-   */
   private generateRevealMaskPath(bounds: Rect, fontSize: number, isRtl: boolean): string {
     const y = bounds.y + bounds.height / 2;
     const padding = fontSize * 0.5;
@@ -291,9 +391,6 @@ export class ArabicShaper {
     return `M ${startX} ${y} L ${endX} ${y}`;
   }
 
-  /**
-   * Find the previous base character (skip tashkeel).
-   */
   private findPrevBaseChar(chars: string[], index: number): string | null {
     for (let i = index - 1; i >= 0; i--) {
       if (!isTashkeel(chars[i])) return chars[i];
@@ -301,9 +398,6 @@ export class ArabicShaper {
     return null;
   }
 
-  /**
-   * Find the next base character (skip tashkeel).
-   */
   private findNextBaseChar(chars: string[], index: number): string | null {
     for (let i = index + 1; i < chars.length; i++) {
       if (!isTashkeel(chars[i])) return chars[i];
