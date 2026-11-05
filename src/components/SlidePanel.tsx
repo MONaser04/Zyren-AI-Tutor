@@ -1,17 +1,29 @@
 /**
- * SlidePanel — Collapsible Slide Deck & Multi-Board History Manager.
+ * SlidePanel — PowerPoint-Style Visual Slide Sorter & Live Thumbnail Strip.
  *
- * Provides a PowerPoint-like slide navigation panel on the right side:
- * - Vertical list of whiteboard slides with preview cards and metadata.
- * - Single-click switching between previous and current boards.
- * - "+ New Board" button to add a fresh blank slide.
- * - Smooth collapse / expand drawer animation with a floating trigger pill.
+ * Displays authentic 16:9 miniature previews of every whiteboard slide stacked
+ * vertically with left-side slide numbering, live active-slide updates, inline
+ * title renaming, quick deletion, and single-click slide navigation.
  */
 import React, { useState } from 'react';
 import type { HandwritingPayload } from '../types';
+import { SlideThumbnail } from './SlideThumbnail';
 
-export interface UserDrawingPath { id: string; d: string; color: string; strokeWidth: number; }
-export interface UserDrawingText { id: string; x: number; y: number; text: string; color: string; fontSize: number; }
+export interface UserDrawingPath {
+  id: string;
+  d: string;
+  color: string;
+  strokeWidth: number;
+}
+
+export interface UserDrawingText {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  fontSize: number;
+}
 
 export interface WhiteboardPage {
   id: string;
@@ -47,6 +59,7 @@ export function SlidePanel({
 }: SlidePanelProps) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState<string>('');
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const startRename = (index: number, currentTitle: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -62,11 +75,11 @@ export function SlidePanel({
     }
     setEditingIndex(null);
   };
+
   return (
     <>
-      {/* Slide Deck Sidebar Drawer */}
       <div
-        className="slide-panel-drawer no-zoom"
+        className="slide-panel-drawer slide-panel no-zoom"
         onPointerDown={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
         onWheel={(e) => e.stopPropagation()}
@@ -77,11 +90,11 @@ export function SlidePanel({
           top: 0,
           right: 0,
           bottom: 0,
-          width: 300,
-          backgroundColor: 'rgba(15, 15, 28, 0.94)',
-          backdropFilter: 'blur(20px)',
+          width: 316,
+          backgroundColor: 'rgba(15, 15, 28, 0.96)',
+          backdropFilter: 'blur(22px)',
           borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
-          boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.5)',
+          boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.55)',
           zIndex: 50,
           display: 'flex',
           flexDirection: 'column',
@@ -96,7 +109,7 @@ export function SlidePanel({
           className="slide-panel-header no-zoom"
           onWheel={(e) => e.stopPropagation()}
           style={{
-            padding: '18px 20px',
+            padding: '15px 18px',
             borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
             display: 'flex',
             alignItems: 'center',
@@ -106,8 +119,10 @@ export function SlidePanel({
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 18 }}>📑</span>
             <div>
-              <div style={{ color: '#FFFFFF', fontWeight: 600, fontSize: 15 }}>Whiteboard Slides</div>
-              <div style={{ color: '#888', fontSize: 12 }}>{pages.length} {pages.length === 1 ? 'board' : 'boards'} in session</div>
+              <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: 14.5 }}>Slides Navigator</div>
+              <div style={{ color: '#8890A6', fontSize: 11.5 }}>
+                {pages.length} {pages.length === 1 ? 'slide' : 'slides'} • Live Preview
+              </div>
             </div>
           </div>
 
@@ -118,7 +133,7 @@ export function SlidePanel({
               background: 'none',
               border: 'none',
               color: '#888',
-              fontSize: 18,
+              fontSize: 17,
               cursor: 'pointer',
               padding: '6px 8px',
               borderRadius: 6,
@@ -138,7 +153,7 @@ export function SlidePanel({
           </button>
         </div>
 
-        {/* Scrollable Slide List */}
+        {/* PowerPoint-Style Vertical Thumbnail Strip */}
         <div
           className="slide-list no-zoom interactive"
           onWheel={(e) => e.stopPropagation()}
@@ -148,213 +163,191 @@ export function SlidePanel({
             flex: 1,
             overflowY: 'auto',
             overscrollBehavior: 'contain',
-            padding: '16px',
+            padding: '14px 14px 18px 10px',
             display: 'flex',
             flexDirection: 'column',
-            gap: 12,
+            gap: 14,
           }}
         >
           {pages.map((page, index) => {
             const isActive = index === activePageIndex;
-            const mathCount = page.shapes.filter((s) => s.shapeType === 'math').length;
-            const diagramCount = page.shapes.filter((s) => s.shapeType !== 'math' && s.shapeType !== 'text').length;
-            const textCount = page.shapes.filter((s) => s.shapeType === 'text').length + page.handwriting.length;
+            const isHovered = hoveredIndex === index;
 
             return (
               <div
                 key={page.id}
+                className="slide-card"
                 onClick={() => onSelectPage(index)}
+                onMouseEnter={() => setHoveredIndex(index)}
+                onMouseLeave={() => setHoveredIndex((prev) => (prev === index ? null : prev))}
                 style={{
-                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  padding: '6px 8px 6px 4px',
                   borderRadius: 10,
-                  backgroundColor: isActive ? 'rgba(78, 205, 196, 0.12)' : 'rgba(255, 255, 255, 0.03)',
-                  border: isActive ? '1.5px solid #4ECDC4' : '1px solid rgba(255, 255, 255, 0.08)',
+                  backgroundColor: isActive
+                    ? 'rgba(78, 205, 196, 0.1)'
+                    : isHovered
+                    ? 'rgba(255, 255, 255, 0.045)'
+                    : 'transparent',
                   cursor: 'pointer',
-                  position: 'relative',
-                  transition: 'all 0.18s ease',
-                  boxShadow: isActive ? '0 4px 16px rgba(78, 205, 196, 0.15)' : 'none',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.07)';
-                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
-                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
-                  }
+                  transition: 'background-color 0.15s ease',
                 }}
               >
-                {/* Slide Card Header */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span
-                      style={{
-                        padding: '2px 7px',
-                        borderRadius: 4,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        backgroundColor: isActive ? '#4ECDC4' : 'rgba(255, 255, 255, 0.1)',
-                        color: isActive ? '#1a1a2e' : '#aaa',
-                      }}
-                    >
-                      Slide {page.pageNumber}
-                    </span>
-                    {isActive && (
-                      <span
+                {/* PowerPoint Left Slide Number Gutter */}
+                <div
+                  style={{
+                    width: 22,
+                    paddingTop: 4,
+                    textAlign: 'right',
+                    fontSize: 12,
+                    fontWeight: isActive ? 800 : 600,
+                    color: isActive ? '#4ECDC4' : '#7E869E',
+                    fontVariantNumeric: 'tabular-nums',
+                    flexShrink: 0,
+                    userSelect: 'none',
+                  }}
+                >
+                  {page.pageNumber || index + 1}
+                </div>
+
+                {/* Right Column: 16:9 Live Visual Thumbnail + Caption */}
+                <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+                  <div style={{ position: 'relative' }}>
+                    <SlideThumbnail page={page} isActive={isActive} />
+
+                    {/* Floating Quick Action Buttons on Hover / Active */}
+                    {(isHovered || isActive) && (
+                      <div
                         style={{
-                          fontSize: 10,
-                          fontWeight: 600,
-                          color: '#4ECDC4',
+                          position: 'absolute',
+                          top: 6,
+                          right: 6,
                           display: 'flex',
-                          alignItems: 'center',
                           gap: 4,
+                          zIndex: 4,
                         }}
                       >
-                        ● Active
-                      </span>
+                        <button
+                          type="button"
+                          onClick={(e) => startRename(index, page.title, e)}
+                          title="Rename slide"
+                          style={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: 5,
+                            border: '1px solid rgba(255, 255, 255, 0.18)',
+                            backgroundColor: 'rgba(15, 16, 30, 0.85)',
+                            color: '#CBD5E1',
+                            fontSize: 11,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: 0,
+                          }}
+                        >
+                          ✎
+                        </button>
+
+                        {pages.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeletePage(index);
+                            }}
+                            title="Delete slide"
+                            style={{
+                              width: 24,
+                              height: 24,
+                              borderRadius: 5,
+                              border: '1px solid rgba(255, 107, 107, 0.35)',
+                              backgroundColor: 'rgba(20, 12, 20, 0.88)',
+                              color: '#FF6B6B',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: 0,
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 
-                  {pages.length > 1 && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeletePage(index);
-                      }}
-                      title="Delete Slide"
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#666',
-                        fontSize: 13,
-                        cursor: 'pointer',
-                        padding: '3px 6px',
-                        borderRadius: 4,
-                        transition: 'color 0.15s, background-color 0.15s',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = '#FF6B6B';
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.15)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = '#666';
-                        e.currentTarget.style.backgroundColor = 'transparent';
-                      }}
-                    >
-                      🗑️
-                    </button>
-                  )}
-                </div>
-
-                {/* Slide Title / Summary (Click or pencil icon to rename) */}
-                {editingIndex === index ? (
-                  <div
-                    style={{ marginBottom: 6 }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="text"
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      onBlur={() => handleRenameSubmit(index)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleRenameSubmit(index);
-                        if (e.key === 'Escape') setEditingIndex(null);
-                      }}
-                      autoFocus
-                      style={{
-                        width: '100%',
-                        backgroundColor: 'rgba(0, 0, 0, 0.6)',
-                        color: '#4ECDC4',
-                        border: '1px solid #4ECDC4',
-                        borderRadius: 4,
-                        padding: '4px 8px',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        outline: 'none',
-                        fontFamily: "'Inter', sans-serif",
-                        boxSizing: 'border-box',
-                      }}
-                    />
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      marginBottom: 6,
-                    }}
-                    title="Click pencil to rename slide"
-                  >
+                  {/* Compact Editable Slide Caption Underneath Preview */}
+                  {editingIndex === index ? (
+                    <div style={{ marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="text"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        onBlur={() => handleRenameSubmit(index)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRenameSubmit(index);
+                          if (e.key === 'Escape') setEditingIndex(null);
+                        }}
+                        autoFocus
+                        style={{
+                          width: '100%',
+                          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                          color: '#4ECDC4',
+                          border: '1px solid #4ECDC4',
+                          borderRadius: 5,
+                          padding: '3px 7px',
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          outline: 'none',
+                          fontFamily: "'Inter', sans-serif",
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                    </div>
+                  ) : (
                     <div
+                      onDoubleClick={(e) => startRename(index, page.title, e)}
+                      title={`${page.title || `Slide ${page.pageNumber}`} (Double-click to rename)`}
                       style={{
-                        color: '#e0e0e0',
-                        fontSize: 13,
-                        fontWeight: 500,
+                        marginTop: 5,
+                        fontSize: 11.5,
+                        fontWeight: isActive ? 700 : 500,
+                        color: isActive ? '#E2E8F0' : '#94A3B8',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
-                        flex: 1,
-                        marginRight: 6,
+                        padding: '0 2px',
                       }}
-                      onDoubleClick={(e) => startRename(index, page.title, e)}
                     >
-                      {page.title || `Whiteboard Step #${page.pageNumber}`}
+                      {page.title || `Slide ${page.pageNumber || index + 1}`}
                     </div>
-                    <button
-                      onClick={(e) => startRename(index, page.title, e)}
-                      title="Rename slide"
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#777',
-                        fontSize: 12,
-                        cursor: 'pointer',
-                        padding: '2px 4px',
-                        borderRadius: 4,
-                        transition: 'color 0.15s',
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = '#4ECDC4')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = '#777')}
-                    >
-                      ✎
-                    </button>
-                  </div>
-                )}
-
-                {/* Content Metadata Pills */}
-                <div style={{ display: 'flex', gap: 6, fontSize: 11, color: '#777' }}>
-                  <span>∑ {mathCount} math</span>
-                  <span>•</span>
-                  <span>📐 {diagramCount} shapes</span>
-                  <span>•</span>
-                  <span>✏️ {textCount} notes</span>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* Bottom Actions */}
+        {/* Bottom "+ New Whiteboard Slide" Button */}
         <div
           style={{
-            padding: '16px 20px',
+            padding: '14px 16px',
             borderTop: '1px solid rgba(255, 255, 255, 0.08)',
             display: 'flex',
             flexDirection: 'column',
-            gap: 10,
           }}
         >
           <button
             onClick={onAddNewPage}
             style={{
-              padding: '11px 16px',
+              padding: '10px 14px',
               backgroundColor: '#4ECDC4',
-              color: '#1a1a2e',
+              color: '#131528',
               border: 'none',
               borderRadius: 8,
               fontWeight: 700,
@@ -377,7 +370,7 @@ export function SlidePanel({
             }}
           >
             <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-            <span>New Whiteboard Slide</span>
+            <span>New Slide</span>
           </button>
         </div>
       </div>
