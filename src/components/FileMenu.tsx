@@ -1,15 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { WhiteboardPage } from './SlidePanel';
+import type { ChatMessage } from './ChatDrawer';
 
 export interface RecentSession {
   id: string;
   name: string;
   timestamp: number;
   slideCount: number;
-  data: {
+  messageCount?: number;
+  data?: {
+    id?: string;
     title: string;
     activePageIndex: number;
     pages: WhiteboardPage[];
+    chatMessages?: ChatMessage[];
   };
 }
 
@@ -22,21 +26,29 @@ interface FileMenuProps {
   onSave: () => void;
   onSaveAs: () => void;
   onOpenPicker: () => void;
-  onOpenFile: (data: { title?: string; pages: WhiteboardPage[]; activePageIndex?: number }) => void;
+  onOpenFile: (data: {
+    id?: string;
+    title?: string;
+    pages: WhiteboardPage[];
+    activePageIndex?: number;
+    chatMessages?: ChatMessage[];
+  }) => void;
   onExportPNG: () => void;
   onExportPDF: () => void;
   onClearSlide: () => void;
   recentSessions: RecentSession[];
+  activeSessionId?: string;
   onLoadRecent: (session: RecentSession) => void;
   onDeleteRecent: (id: string) => void;
   onOpenVoiceModal?: () => void;
+  onOpenApiKeyModal?: () => void;
+  autoSaveState?: 'idle' | 'saving' | 'saved' | 'error';
+  lastAutoSavedAt?: number | null;
 }
 
 export const FileMenu: React.FC<FileMenuProps> = ({
   currentTitle,
   onUpdateTitle,
-  pages,
-  activePageIndex,
   onNewFile,
   onSave,
   onSaveAs,
@@ -44,11 +56,13 @@ export const FileMenu: React.FC<FileMenuProps> = ({
   onOpenFile,
   onExportPNG,
   onExportPDF,
-  onClearSlide,
   recentSessions,
+  activeSessionId,
   onLoadRecent,
   onDeleteRecent,
-  onOpenVoiceModal,
+  onOpenApiKeyModal,
+  autoSaveState = 'saved',
+  lastAutoSavedAt,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isRecentSubmenuOpen, setIsRecentSubmenuOpen] = useState(false);
@@ -61,7 +75,6 @@ export const FileMenu: React.FC<FileMenuProps> = ({
     setTitleInput(currentTitle);
   }, [currentTitle]);
 
-  // Close menu on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -108,6 +121,10 @@ export const FileMenu: React.FC<FileMenuProps> = ({
     }
   };
 
+  const autoSaveTimeStr = lastAutoSavedAt
+    ? new Date(lastAutoSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+
   return (
     <div
       ref={menuRef}
@@ -128,7 +145,6 @@ export const FileMenu: React.FC<FileMenuProps> = ({
       onTouchStart={(e) => e.stopPropagation()}
       onTouchMove={(e) => e.stopPropagation()}
     >
-      {/* Hidden file input for Open File */}
       <input
         ref={fileInputRef}
         type="file"
@@ -137,13 +153,13 @@ export const FileMenu: React.FC<FileMenuProps> = ({
         onChange={handleFileInputChange}
       />
 
-      {/* Brand & Menu Bar Container */}
+      {/* Brand, File Menu, Session Title & Live Auto-Save Status */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          backgroundColor: 'rgba(26, 26, 46, 0.85)',
+          backgroundColor: 'rgba(26, 26, 46, 0.88)',
           backdropFilter: 'blur(14px)',
           border: '1px solid rgba(255, 255, 255, 0.14)',
           borderRadius: 10,
@@ -183,27 +199,26 @@ export const FileMenu: React.FC<FileMenuProps> = ({
             <span style={{ fontSize: 10, opacity: 0.7 }}>{isOpen ? '▲' : '▼'}</span>
           </button>
 
-          {/* Dropdown Menu Modal */}
           {isOpen && (
             <div
               style={{
                 position: 'absolute',
                 top: 'calc(100% + 8px)',
                 left: 0,
-                width: 250,
-                backgroundColor: 'rgba(20, 20, 38, 0.96)',
+                width: 265,
+                backgroundColor: 'rgba(20, 20, 38, 0.97)',
                 backdropFilter: 'blur(20px)',
                 border: '1px solid rgba(255, 255, 255, 0.18)',
                 borderRadius: 10,
                 padding: '6px 0',
-                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.55)',
                 display: 'flex',
                 flexDirection: 'column',
                 zIndex: 100,
                 fontFamily: "'Inter', sans-serif",
               }}
             >
-              {/* New File */}
+              {/* New Session */}
               <button
                 onClick={() => {
                   setIsOpen(false);
@@ -214,11 +229,11 @@ export const FileMenu: React.FC<FileMenuProps> = ({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span>✨</span>
-                  <span>New Whiteboard</span>
+                  <span>New Session (Auto-Saves Current)</span>
                 </div>
               </button>
 
-              {/* Save (In-place quick save) */}
+              {/* Save */}
               <button
                 onClick={() => {
                   setIsOpen(false);
@@ -229,11 +244,11 @@ export const FileMenu: React.FC<FileMenuProps> = ({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span>💾</span>
-                  <span>Save</span>
+                  <span>Save Now</span>
                 </div>
               </button>
 
-              {/* Save As (Download .aitutor file to PC) */}
+              {/* Save As */}
               <button
                 onClick={() => {
                   setIsOpen(false);
@@ -244,7 +259,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span>📥</span>
-                  <span>Save As... (.aitutor)</span>
+                  <span>Export File... (.aitutor)</span>
                 </div>
               </button>
 
@@ -267,7 +282,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                 </div>
               </button>
 
-              {/* Open Recent */}
+              {/* Saved / Auto-Saved Sessions History */}
               <div
                 style={{ position: 'relative' }}
                 onMouseEnter={() => setIsRecentSubmenuOpen(true)}
@@ -280,92 +295,98 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span>🕒</span>
-                    <span>Open Recent</span>
+                    <span>Saved Sessions ({recentSessions.length})</span>
                   </div>
                   <span style={{ fontSize: 11, opacity: 0.7 }}>▶</span>
                 </button>
 
-                {/* Submenu for Recent Files */}
                 {isRecentSubmenuOpen && (
                   <div
                     style={{
                       position: 'absolute',
                       top: 0,
                       left: 'calc(100% + 4px)',
-                      width: 280,
-                      maxHeight: 340,
+                      width: 310,
+                      maxHeight: 360,
                       overflowY: 'auto',
                       backgroundColor: 'rgba(20, 20, 38, 0.98)',
                       backdropFilter: 'blur(20px)',
                       border: '1px solid rgba(255, 255, 255, 0.18)',
                       borderRadius: 10,
                       padding: '6px 0',
-                      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+                      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)',
                       zIndex: 110,
                     }}
                   >
                     {recentSessions.length === 0 ? (
-                      <div style={{ padding: '12px 16px', fontSize: 12, color: '#777', textAlign: 'center' }}>
-                        No recent sessions saved
+                      <div style={{ padding: '14px 16px', fontSize: 12, color: '#777', textAlign: 'center' }}>
+                        No auto-saved sessions yet
                       </div>
                     ) : (
-                      recentSessions.map((session) => (
-                        <div
-                          key={session.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '8px 14px',
-                            cursor: 'pointer',
-                            transition: 'background 0.15s',
-                          }}
-                          className="recent-session-item"
-                          onClick={() => {
-                            setIsOpen(false);
-                            setIsRecentSubmenuOpen(false);
-                            onLoadRecent(session);
-                          }}
-                        >
-                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
-                            <div style={{ color: '#fff', fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {session.name || 'Untitled Session'}
-                            </div>
-                            <div style={{ color: '#888', fontSize: 10, marginTop: 2 }}>
-                              {session.slideCount || 1} slide{(session.slideCount || 1) > 1 ? 's' : ''} • {new Date(session.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                            </div>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onDeleteRecent(session.id);
-                            }}
-                            title="Remove from recents"
+                      recentSessions.map((session) => {
+                        const isCurrent = activeSessionId && session.id === activeSessionId;
+                        return (
+                          <div
+                            key={session.id}
                             style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#666',
-                              fontSize: 12,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 14px',
                               cursor: 'pointer',
-                              padding: '2px 6px',
-                              borderRadius: 4,
+                              backgroundColor: isCurrent ? 'rgba(78, 205, 196, 0.1)' : 'transparent',
+                              borderLeft: isCurrent ? '2.5px solid #4ECDC4' : '2.5px solid transparent',
+                              transition: 'background 0.15s',
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = '#ff6b6b')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                            className="recent-session-item"
+                            onClick={() => {
+                              setIsOpen(false);
+                              setIsRecentSubmenuOpen(false);
+                              onLoadRecent(session);
+                            }}
                           >
-                            ✕
-                          </button>
-                        </div>
-                      ))
+                            <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8, flex: 1 }}>
+                              <div style={{ color: isCurrent ? '#4ECDC4' : '#fff', fontSize: 12, fontWeight: isCurrent ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {session.name || 'Untitled Session'} {isCurrent ? '• Active' : ''}
+                              </div>
+                              <div style={{ color: '#888', fontSize: 10.5, marginTop: 2 }}>
+                                {session.slideCount || 1} slide{(session.slideCount || 1) > 1 ? 's' : ''}
+                                {typeof session.messageCount === 'number' ? ` • 💬 ${session.messageCount}` : ''}
+                                {' • '}
+                                {new Date(session.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteRecent(session.id);
+                              }}
+                              title="Delete saved session"
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#666',
+                                fontSize: 12,
+                                cursor: 'pointer',
+                                padding: '2px 6px',
+                                borderRadius: 4,
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.color = '#ff6b6b')}
+                              onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 )}
               </div>
 
-              {/* Divider */}
               <div style={{ height: 1, backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '6px 0' }} />
 
-              {/* Export as PNG */}
+              {/* Export PNG */}
               <button
                 onClick={() => {
                   setIsOpen(false);
@@ -380,7 +401,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                 </div>
               </button>
 
-              {/* Export as PDF */}
+              {/* Export PDF */}
               <button
                 onClick={() => {
                   setIsOpen(false);
@@ -394,12 +415,31 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                   <span>Export All Slides as PDF</span>
                 </div>
               </button>
+
+              {onOpenApiKeyModal && (
+                <>
+                  <div style={{ height: 1, backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '6px 0' }} />
+                  <button
+                    onClick={() => {
+                      setIsOpen(false);
+                      onOpenApiKeyModal();
+                    }}
+                    className="file-menu-item"
+                    style={menuItemStyle}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span>🔑</span>
+                      <span>Gemini API Key Settings...</span>
+                    </div>
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
 
         {/* Current Session Title (Click to rename) */}
-        <div style={{ paddingLeft: 6, borderLeft: '1px solid rgba(255, 255, 255, 0.12)' }}>
+        <div style={{ paddingLeft: 6, borderLeft: '1px solid rgba(255, 255, 255, 0.12)', display: 'flex', alignItems: 'center', gap: 8 }}>
           {isEditingTitle ? (
             <input
               type="text"
@@ -440,7 +480,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({
                 padding: '2px 6px',
                 borderRadius: 4,
                 transition: 'color 0.15s, background 0.15s',
-                maxWidth: 200,
+                maxWidth: 190,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -458,6 +498,38 @@ export const FileMenu: React.FC<FileMenuProps> = ({
               {currentTitle || 'Untitled Whiteboard'} ✎
             </div>
           )}
+
+          {/* Subtle Auto-Save Status Indicator (Word / Gemini / Antigravity style) */}
+          <span
+            title={
+              autoSaveState === 'saving'
+                ? 'Auto-saving slides & chat conversation...'
+                : lastAutoSavedAt
+                ? `All slides & conversations auto-saved (${autoSaveTimeStr})`
+                : 'Continuous Auto-Save active'
+            }
+            style={{
+              fontSize: 10.5,
+              fontWeight: 600,
+              color:
+                autoSaveState === 'saving'
+                  ? '#FFD54F'
+                  : autoSaveState === 'error'
+                  ? '#FF6B6B'
+                  : '#6EE7B7',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              padding: '2px 7px',
+              borderRadius: 12,
+              whiteSpace: 'nowrap',
+              fontFamily: "'Inter', sans-serif",
+            }}
+          >
+            {autoSaveState === 'saving'
+              ? '⟳ Saving...'
+              : autoSaveState === 'error'
+              ? '⚠ Save retry'
+              : '✓ Auto-saved'}
+          </span>
         </div>
       </div>
     </div>
@@ -478,11 +550,4 @@ const menuItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   textAlign: 'left',
   transition: 'background-color 0.15s, color 0.15s',
-};
-
-const shortcutStyle: React.CSSProperties = {
-  fontSize: 11,
-  color: '#888',
-  fontFamily: 'monospace',
-  marginLeft: 12,
 };
