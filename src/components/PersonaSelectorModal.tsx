@@ -463,10 +463,10 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
                 }}
               >
                 <span>👤</span>
-                <span>Student Name / اسم المتعلم (Optional / اختياري)</span>
+                <span>Student Name (Optional)</span>
               </div>
               <span style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.5)' }}>
-                Saved locally on your device only • محفوظ محلياً فقط
+                Saved locally on your device only
               </span>
             </div>
             <div style={{ position: 'relative' }}>
@@ -481,7 +481,7 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
                     learnerName: e.target.value,
                   });
                 }}
-                placeholder="e.g. Type your name / أدخل اسمك هنا"
+                placeholder="e.g. Enter your name"
                 maxLength={40}
                 style={{
                   width: '100%',
@@ -498,7 +498,7 @@ export const PersonaSelectorModal: React.FC<PersonaSelectorModalProps> = ({
               />
             </div>
             <div style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.55)', marginTop: 6, lineHeight: 1.4 }}>
-              The tutor will address you naturally by your name during explanations, greetings, and praise. (سيخاطبك المعلم باسمك أثناء الشرح والترحيب)
+              The tutor will address you naturally by your name during explanations, greetings, and praise.
             </div>
           </div>
 

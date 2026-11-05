@@ -344,7 +344,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
           {onResetAIMemory && (
             <button
               onClick={onResetAIMemory}
-              title="Reset AI Memory (Start New Conversation / بدء محادثة جديدة بذاكرة نظيفة)"
+              title="Reset AI Memory (Start New Conversation)"
               style={{
                 backgroundColor: 'rgba(255, 107, 107, 0.15)',
                 border: '1px solid rgba(255, 107, 107, 0.35)',
