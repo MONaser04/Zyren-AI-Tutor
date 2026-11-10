@@ -8,6 +8,7 @@ import { GraphOverlay, type GraphOverlayHandle } from '../layers/GraphOverlay';
 import { Graph3DOverlay, type Graph3DOverlayHandle } from '../layers/Graph3DOverlay';
 import { VennOverlay, type VennOverlayHandle } from '../layers/VennOverlay';
 import { QuizOverlay, type QuizOverlayHandle } from '../layers/QuizOverlay';
+import { TableOverlay, type TableOverlayHandle } from '../layers/TableOverlay';
 import { SlideMediaOverlay, type SlideMediaOverlayHandle } from '../layers/SlideMediaOverlay';
 import { SyncEngine } from '../engine/SyncEngine';
 import * as CollisionDetector from '../engine/CollisionDetector';
@@ -155,6 +156,7 @@ export function Whiteboard({
   const graph3dRef = useRef<Graph3DOverlayHandle>(null);
   const vennRef = useRef<VennOverlayHandle>(null);
   const quizRef = useRef<QuizOverlayHandle>(null);
+  const tableRef = useRef<TableOverlayHandle>(null);
   const mediaRef = useRef<SlideMediaOverlayHandle>(null);
   const engineRef = useRef<SyncEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1024,6 +1026,11 @@ export function Whiteboard({
             has2DGraph: (p.shapes || []).some((s) => s.shapeType === 'graph'),
             has3DGraph: (p.shapes || []).some((s) => s.shapeType === 'graph3d'),
             hasMedia: (p.shapes || []).some((s) => s.shapeType === 'image' || s.shapeType === 'video'),
+            hasTable: (p.shapes || []).some((s) => s.shapeType === 'table'),
+            tablesSummary: (p.shapes || [])
+              .filter((s) => s.shapeType === 'table')
+              .map((s) => s.options?.title || s.label || 'Table')
+              .slice(0, 3),
             mediaSummary: (p.shapes || [])
               .filter((s) => s.shapeType === 'image' || s.shapeType === 'video')
               .map(
@@ -2166,12 +2173,14 @@ export function Whiteboard({
       vennOverlay: vennRef.current ?? undefined,
       mediaOverlay: mediaRef.current ?? undefined,
       quizOverlay: quizRef.current ?? undefined,
+      tableOverlay: tableRef.current ?? undefined,
       getMathOverlay: () => mathRef.current,
       getGraphOverlay: () => graphRef.current,
       getGraph3DOverlay: () => graph3dRef.current,
       getVennOverlay: () => vennRef.current,
       getMediaOverlay: () => mediaRef.current,
       getQuizOverlay: () => quizRef.current,
+      getTableOverlay: () => tableRef.current,
       getWritingStyle: () => currentStyleRef.current,
       onTelemetry: (metrics: SyncTelemetry) => setTelemetryRef.current(metrics),
       onBoardFull: () => addNewPageRef.current(),
@@ -3836,6 +3845,12 @@ export function Whiteboard({
           onQuizAnswerSubmitted={handleQuizAnswerSubmitted}
           onRemoveQuiz={handleRemoveQuiz}
           onUpdatePosition={handleQuizPositionUpdate}
+        />
+
+        {/* Layer 5.9: High-Contrast Pedagogical Table Overlay */}
+        <TableOverlay
+          ref={tableRef}
+          zoom={transform.zoom}
         />
 
         {/* Layer 6: User Drawing Overlay (Handwriting & Text input by the user) */}

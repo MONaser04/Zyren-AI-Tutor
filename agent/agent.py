@@ -115,6 +115,7 @@ TUTOR_SYSTEM_INSTRUCTIONS = (
     "   - write_text: MANDATORY for animated handwriting titles at top header (y: 70) and (when writing style is Handwriting or Mixed) for proactively documenting active academic language linguistic definitions, terminology mappings, rules, and prose notes on the whiteboard simultaneously as they are explained. Supports custom font_size (e.g. 12 to 80px; defaults: 44px for title, 32px for subtitle, 24px for body). Separate distinct numbered, lettered, or bulleted items with newline characters, and never use write_text for standalone mathematical equations.\n"
     "   - create_instant_quiz: MANDATORY whenever assessing the student's understanding of a concept, formula, rule, or vocabulary term with an interactive quiz card on the whiteboard! Supports quiz_type='multiple_choice' (with options=[{'id': 'a', 'label': 'A', 'text': '...', 'isCorrect': True}, ...]), 'true_false', 'matching' (with pairs=[{'leftId': 'l1', 'leftText': '...', 'rightId': 'r1', 'rightText': '...'}]), 'fill_in_the_blank', 'ordering', or 'short_answer'. The student can answer by clicking/tapping on the canvas, speaking their answer aloud, writing it with the pen, or drawing a circle around the option! When the student answers verbally, call submit_quiz_answer(quiz_id='...', answer='...') to trigger instant checkmark and visual feedback on the board! CRITICAL QUIZ DISCIPLINE: When the student asks for an alternative question type or excludes standard formats, NEVER invent ad-hoc manual drawing exercises or scatter shapes on a blank slide. Instead, deploy a sequence ordering quiz ('ordering') to sequence procedural steps/algorithms, or clearly explain the supported interactive formats. ABSOLUTE PROHIBITION ON STATIC PSEUDO-QUIZZES: NEVER use draw_concept_card, write_normal_text, or draw_shape to draw cards with 'Challenge', 'Quiz', or 'Antwort: ______' underlines. ALL quizzes, challenges, and questions MUST be deployed using create_instant_quiz exclusively!\n"
     "   - submit_quiz_answer: MANDATORY whenever the student states ANY answer, mentions a step position, or states a sequence (e.g. 'First Datensammlung, second Datenvorverarbeitung', 'Why is Datenvorbereitung at the end?', 'Put X as step 2'). You MUST IMMEDIATELY call `submit_quiz_answer` in that EXACT SAME TURN with their stated sequence! NEVER argue verbally, NEVER say 'I didn't say it belongs at the end', and NEVER wait for the student to repeat themselves before updating the whiteboard card! Even for partial steps (e.g. 'Datensammlung, Datenvorverarbeitung'), call submit_quiz_answer with what they stated so the whiteboard card IMMEDIATELY moves those steps to the top and rearranges on screen in real time! For ordering quizzes, pass the student's stated sequence (e.g. 'Datensammlung, Datenvorverarbeitung, Modelltraining...'). For matching quizzes, pass the student's stated pairings (e.g. 'Supervised -> gelabelte Daten').\n"
+    "   - draw_table: MANDATORY whenever comparing concepts, algorithms, data structures, features, frameworks, pros/cons, or formula overviews in a structured matrix. Supports title='...', columns=['Col 1', 'Col 2', ...], rows=[['Val 1', 'Val 2'], ...], slot='auto' | 'full' | 'right', and theme='cyan' | 'slate' | 'emerald' | 'purple' | 'amber'. ABSOLUTE PROHIBITION ON RAW MARKDOWN PIPE TABLES: NEVER output raw ASCII or Markdown table text (e.g. '| Header | Header | \n |---|---|') using write_normal_text or write_text! ALL tabular comparisons MUST be created with draw_table exclusively so they render as gorgeous, high-contrast, pedagogical matrix cards.\n"
     "   - draw_diagram: MANDATORY for all structured explanatory diagrams, concept trees, hierarchies, taxonomies, classifications, processes, flowcharts, and comparison boards. Guarantees auto-layout, auto-sized boxes, and aligned connectors. Supports ALL 4 directions: direction='TB' (Top-to-Bottom), direction='BT' (Bottom-to-Top / upward hierarchy from bottom root to top branches), direction='LR' (Left-to-Right), and direction='RL' (Right-to-Left). NEVER claim that bottom-to-top ('BT') or right-to-left ('RL') is unsupported! Use children=[{'label': '...'}] on any node to branch into connected child boxes with arrows, and use items=[...] only for plain bullet text under a box. Updating or expanding an existing tree or flowchart on the current slide automatically merges and re-layouts the diagram in place.\n"
     "   - update_whiteboard_item: MANDATORY for surgical, in-place modifications to any existing whiteboard content (resizing font size for handwriting, normal text, or math via font_size e.g. 12px to 80px, renaming a diagram box, editing or appending bullet points under a specific node, fixing a typo or substring in normal/handwritten text or a math formula, changing a diagram's direction between 'TB', 'BT', 'LR', and 'RL', deleting a single branch/node, or moving an item). Full font size resizing is 100% supported for ALL items (including handwriting, normal text, and formulas). NEVER claim or assume that handwriting font size cannot be changed or resized! ALWAYS use update_whiteboard_item(target='...', font_size=...) when the student asks to change, enlarge, or shrink text size.\n"
     "   - draw_shape: ONLY for standalone geometric figures (rectangles, ellipses, triangles in math/geometry) and physics vectors/arrows (use label='...' to display text or numbers directly centered inside shapes). NEVER use for trees or branching diagrams. STRICT PROHIBITION: NEVER use draw_shape to improvise ad-hoc drawing exercises, scattering data points, or asking the student to draw separating boundaries or lines. All formative student assessments MUST use create_instant_quiz exclusively.\n"
@@ -971,6 +972,9 @@ class TutorAgent(Agent):
                     lines.append(f"  * 2D Coordinate Graph: Present")
                 if s.get("has3DGraph"):
                     lines.append(f"  * 3D WebGL Model: Present")
+                if s.get("hasTable"):
+                    t_sum = ", ".join(s.get("tablesSummary", ["Table"]))
+                    lines.append(f"  * Pedagogical Comparison Tables: {t_sum}")
             return "\n".join(lines)
 
         lines = [
@@ -1046,6 +1050,13 @@ class TutorAgent(Agent):
             lines.append("#### 3D WebGL Mathematical Figures on Board:")
             for g3 in graphs3d:
                 lines.append(f"- 3D Plot: '{g3.get('title')}' ({g3.get('plotType')}) -> Equation: `{g3.get('equationZ')}`")
+
+        tables = [sh for sh in shapes if isinstance(sh, dict) and (sh.get("shapeType") == "table" or sh.get("type") == "table")]
+        if tables:
+            lines.append("#### Pedagogical Comparison Tables on Board:")
+            for tb in tables:
+                tb_lbl = tb.get("label") or (tb.get("options", {}) if isinstance(tb.get("options"), dict) else {}).get("title") or "Comparison Table"
+                lines.append(f"- Table: '{tb_lbl}'")
 
         spatial = current_slide.get("spatialLayout")
         if spatial:
@@ -2102,6 +2113,82 @@ class TutorAgent(Agent):
         )
         await asyncio.sleep(0.01)
         return f"Plotted probability Venn diagram '{title}' on whiteboard."
+
+    @llm.function_tool(
+        description="Draw an elegant, high-contrast, modern pedagogical comparison table or matrix on the digital whiteboard. Perfect for comparing concepts, algorithms, data structures, historical facts, pros/cons, or formula summaries. Supports multi-column auto-sizing, LaTeX formulas, badges, and themes."
+    )
+    async def draw_table(
+        self,
+        title: str = "",
+        columns: typing.Optional[list[str]] = None,
+        rows: typing.Optional[list[list[typing.Any]]] = None,
+        slot: typing.Literal["auto", "full", "right", "column_1", "column_2", "bottom"] = "auto",
+        theme: typing.Literal["cyan", "slate", "emerald", "purple", "amber"] = "cyan",
+        font_size: int = 16,
+        compact: bool = False,
+    ) -> str:
+        """Draws a modern pedagogical table on the digital whiteboard."""
+        if not self._room or not self._room.local_participant:
+            return "Room not connected."
+
+        col_list = columns or ["Feature", "Option A", "Option B"]
+        row_list = rows or []
+
+        if slot == "full":
+            target_x = 180
+            target_y = 180
+            target_w = 1560
+        elif slot in ("right", "column_2"):
+            target_x = 980
+            target_y = 180
+            target_w = 820
+        elif slot == "column_1":
+            target_x = 150
+            target_y = 180
+            target_w = 760
+        elif slot == "bottom":
+            target_x = 200
+            target_y = 560
+            target_w = 1520
+        else:
+            target_x = 180 if len(col_list) >= 4 else 260
+            target_y = 180
+            target_w = 1560 if len(col_list) >= 4 else 1400
+
+        target_h = 56 + (len(row_list) * 44) + (48 if title else 0)
+
+        table_id = f"table_{int(time.time() * 1000)}"
+        payload = {
+            "type": "agent_action",
+            "action": {
+                "kind": "shape",
+                "shapeType": "table",
+                "id": table_id,
+                "x": target_x,
+                "y": target_y,
+                "width": target_w,
+                "height": target_h,
+                "label": title,
+                "options": {
+                    "id": table_id,
+                    "title": title,
+                    "columns": col_list,
+                    "rows": row_list,
+                    "position": slot,
+                    "theme": theme,
+                    "fontSize": font_size,
+                    "compact": compact,
+                },
+            },
+        }
+
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8"),
+            reliable=True,
+        )
+        print(f">>> [AGENT] Dispatched draw_table: '{title}' ({len(col_list)} cols, {len(row_list)} rows)")
+        await asyncio.sleep(0.01)
+        return f"Drawn comparison table '{title}' with {len(col_list)} columns and {len(row_list)} rows on the whiteboard."
 
     @llm.function_tool(
         description="Deploy an interactive instant quiz directly onto the whiteboard canvas to assess the student's understanding. Supports quiz_type='multiple_choice', 'true_false', 'matching', 'fill_in_the_blank', 'ordering', or 'short_answer'. The student can answer via click/touch, speech/voice, handwriting, or drawing a circle/line on the board. MANDATORY: For multiple_choice, options MUST be a list of objects with 'id' ('opt_1', 'opt_2'), 'label' ('A', 'B'), 'text' (the option sentence), and 'isCorrect' (true on EXACTLY ONE correct option). Specify 'correct_option' (e.g. 'A') as well."

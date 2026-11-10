@@ -79,11 +79,21 @@ CRITICAL ARCHITECTURAL DIRECTIVES:
      - quality: 'hd1080' | 'hd720' | 'medium' | 'auto'
      - width, height: dimensions in pixels
 
-7. OUTPUT FORMAT:
+8. PEDAGOGICAL COMPARISON TABLES:
+   When asked to compare concepts, algorithms, data structures, frameworks, pros/cons, or formula summaries in a structured grid or matrix:
+   Deploy action='draw_table' with:
+     - title: Descriptive table header title
+     - columns: List of column header strings e.g. ['Algorithm', 'Time Complexity', 'Space Complexity', 'Stability']
+     - rows: List of row lists e.g. [['Merge Sort', '$O(n \\log n)$', '$O(n)$', '[✓ Stable]'], ['Quick Sort', '$O(n \\log n)$', '$O(\\log n)$', '[✗ Unstable]']]
+     - slot: 'auto' | 'full' | 'right' | 'column_1' | 'column_2' | 'bottom'
+     - theme: 'cyan' | 'slate' | 'emerald' | 'purple' | 'amber'
+   NEVER use write_normal_text with raw markdown pipes (|) or write_text for tables!
+
+9. OUTPUT FORMAT:
    You MUST respond with a single valid JSON object containing your reasoning thought and the chosen action:
    {
      "thought": "<brief 1-sentence reasoning explaining spatial and tool choice>",
-     "action": "<one of: update_whiteboard_item | draw_diagram | draw_concept_card | write_math | write_normal_text | write_text | draw_graph | draw_3d_graph | draw_shape | draw_venn_diagram | create_instant_quiz | new_whiteboard_slide | erase_content | search_and_display_web_image | display_youtube_video | analyze_youtube_video | search_the_web | control_video>",
+     "action": "<one of: update_whiteboard_item | draw_diagram | draw_concept_card | draw_table | write_math | write_normal_text | write_text | draw_graph | draw_3d_graph | draw_shape | draw_venn_diagram | create_instant_quiz | new_whiteboard_slide | erase_content | search_and_display_web_image | display_youtube_video | analyze_youtube_video | search_the_web | control_video>",
      "parameters": {
        ...
      }
@@ -545,6 +555,16 @@ class ExecutiveModelDispatcher:
                 intersections=params.get("intersections", []),
                 title=params.get("title", "Venn Diagram"),
                 position=params.get("position", "auto"),
+            )
+        elif action == "draw_table":
+            return await agent.draw_table(
+                title=params.get("title", "Comparison Table"),
+                columns=params.get("columns", ["Feature", "Option A", "Option B"]),
+                rows=params.get("rows", []),
+                slot=params.get("slot", params.get("position", "auto")),
+                theme=params.get("theme", "cyan"),
+                font_size=params.get("font_size", 16),
+                compact=params.get("compact", False),
             )
         elif action == "new_whiteboard_slide":
             return await agent.new_whiteboard_slide(title=params.get("title", "New Slide"))

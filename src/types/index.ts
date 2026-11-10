@@ -257,10 +257,32 @@ export interface SlideMediaOptions {
   shareAudioWithAI?: boolean;
 }
 
+export interface TableColumn {
+  id?: string;
+  header: string;
+  width?: number;
+  align?: 'left' | 'center' | 'right';
+  color?: string;
+}
+
+export type TableTheme = 'cyan' | 'slate' | 'emerald' | 'purple' | 'amber';
+
+export interface TableOptions {
+  title?: string;
+  columns: Array<string | TableColumn>;
+  rows: Array<Array<string | number> | Record<string, any>>;
+  position?: 'auto' | 'full' | 'right' | 'column_1' | 'column_2' | 'bottom';
+  theme?: TableTheme;
+  fontSize?: number;
+  compact?: boolean;
+  highlightColumnIndex?: number;
+  highlightRowIndex?: number;
+}
+
 export interface ShapePayload {
   id?: string;
   kind: 'shape';
-  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram' | 'image' | 'video' | 'quiz';
+  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram' | 'image' | 'video' | 'quiz' | 'table';
   x: number;
   y: number;
   width?: number;

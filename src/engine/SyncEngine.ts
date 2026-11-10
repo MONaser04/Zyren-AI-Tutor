@@ -30,6 +30,7 @@ import type { GraphOverlayHandle } from '../layers/GraphOverlay';
 import type { Graph3DOverlayHandle } from '../layers/Graph3DOverlay';
 import type { VennOverlayHandle } from '../layers/VennOverlay';
 import type { QuizOverlayHandle } from '../layers/QuizOverlay';
+import type { TableOverlayHandle } from '../layers/TableOverlay';
 import type { SlideMediaOverlayHandle } from '../layers/SlideMediaOverlay';
 import * as CollisionDetector from './CollisionDetector';
 import { DiagramLayoutEngine, calculateNodeBoxSize } from './DiagramLayoutEngine';
@@ -69,12 +70,14 @@ export interface SyncEngineConfig {
   vennOverlay?: VennOverlayHandle;
   mediaOverlay?: SlideMediaOverlayHandle;
   quizOverlay?: QuizOverlayHandle;
+  tableOverlay?: TableOverlayHandle;
   getMathOverlay?: () => MathOverlayHandle | null | undefined;
   getGraphOverlay?: () => GraphOverlayHandle | null | undefined;
   getGraph3DOverlay?: () => Graph3DOverlayHandle | null | undefined;
   getVennOverlay?: () => VennOverlayHandle | null | undefined;
   getMediaOverlay?: () => SlideMediaOverlayHandle | null | undefined;
   getQuizOverlay?: () => QuizOverlayHandle | null | undefined;
+  getTableOverlay?: () => TableOverlayHandle | null | undefined;
   /** Callback to send barge-in via DataChannel */
   onBargeIn?: (clientTime: number) => void;
   /** Callback for telemetry/monitoring */
@@ -132,6 +135,10 @@ export class SyncEngine {
 
   private get quizOverlay(): QuizOverlayHandle | undefined {
     return this.config.getQuizOverlay?.() ?? this.config.quizOverlay ?? undefined;
+  }
+
+  private get tableOverlay(): TableOverlayHandle | undefined {
+    return this.config.getTableOverlay?.() ?? this.config.tableOverlay ?? undefined;
   }
 
   private get mathOverlay(): MathOverlayHandle | undefined {
@@ -955,6 +962,25 @@ export class SyncEngine {
           });
         }
         break;
+      case 'table':
+        if (this.tableOverlay) {
+          const tOpts = shapeWithZIndex.options || {};
+          this.tableOverlay.addTable({
+            id: shapeWithZIndex.id,
+            title: tOpts.title || shapeWithZIndex.label || '',
+            columns: tOpts.columns || ['Column 1', 'Column 2'],
+            rows: tOpts.rows || [],
+            theme: tOpts.theme || 'cyan',
+            position: tOpts.position || 'auto',
+            fontSize: tOpts.fontSize,
+            compact: tOpts.compact,
+            x: finalX,
+            y: finalY,
+            width: width,
+            height: height,
+          });
+        }
+        break;
       case 'image':
       case 'video': {
         const rawOpts = shapeWithZIndex.options || {};
@@ -1721,6 +1747,7 @@ export class SyncEngine {
     this.vennOverlay?.clear();
     this.mediaOverlay?.clear();
     this.quizOverlay?.clear();
+    this.tableOverlay?.clear();
 
     // Re-render canvas shapes and math formulas
     for (const shape of shapes) {
@@ -1809,6 +1836,22 @@ export class SyncEngine {
             width: width || 520,
             height: height || 360,
             status: options.status || 'active',
+          });
+          break;
+        case 'table':
+          this.tableOverlay?.addTable({
+            id: shape.id,
+            title: options.title || shape.label || '',
+            columns: options.columns || ['Column 1', 'Column 2'],
+            rows: options.rows || [],
+            theme: options.theme || 'cyan',
+            position: options.position || 'auto',
+            fontSize: options.fontSize,
+            compact: options.compact,
+            x,
+            y,
+            width,
+            height,
           });
           break;
         case 'image':
@@ -2002,6 +2045,7 @@ export class SyncEngine {
     this.vennOverlay?.clear();
     this.mediaOverlay?.clear();
     this.quizOverlay?.clear();
+    this.tableOverlay?.clear();
     this.config.onBoardChange?.();
   }
 

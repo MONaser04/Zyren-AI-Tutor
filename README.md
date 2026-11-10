@@ -4,7 +4,7 @@
 
 ![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.5.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
 ![Build Passing](https://img.shields.io/badge/build-passing-10B981?style=for-the-badge&logo=githubactions&logoColor=white)
-![Tests Passing](https://img.shields.io/badge/tests-188%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
+![Tests Passing](https://img.shields.io/badge/tests-196%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
 ![Providers](https://img.shields.io/badge/AI%20Providers-40%2B%20Models-8B5CF6?style=for-the-badge&logo=nvidia&logoColor=white)
 ![LiveKit WebRTC](https://img.shields.io/badge/LiveKit-WebRTC%20RTC-00D26A?style=for-the-badge&logo=livekit&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Gemini_Live-Multimodal%20Realtime-EA4335?style=for-the-badge&logo=google&logoColor=white)
@@ -416,16 +416,17 @@ To run on a tablet, iPad, or mobile phone on the same Wi-Fi network, access the 
 
 ## 🧪 Testing & Quality Assurance
 
-AI Tutor enforces strict quality assurance with **188 automated passing tests** across both frontend and backend layers:
+AI Tutor enforces strict quality assurance with **196 automated passing tests** across both frontend and backend layers:
 
-### 1. Frontend Test Suite (Vitest — 128 Tests)
-Executes 128 unit tests validating interactive quiz interactions and speech parsing, synchronized video playback controls, multi-directional 4-way diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
+### 1. Frontend Test Suite (Vitest — 132 Tests)
+Executes 132 unit tests validating dynamic table layouts and KaTeX cell parsing, interactive quiz interactions, synchronized video playback controls, multi-directional 4-way diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
 ```bash
 npm test
 ```
 ```
  ✓ tests/unit/quiz_overlay.test.ts (20 tests)
  ✓ tests/unit/whiteboard_session.test.ts (9 tests)
+ ✓ tests/unit/table_overlay.test.ts (4 tests)
  ✓ tests/unit/video_control.test.ts (8 tests)
  ✓ tests/unit/venn_diagram.test.ts (14 tests)
  ✓ tests/unit/diagram_layout.test.ts (45 tests)
@@ -433,31 +434,32 @@ npm test
  ✓ tests/unit/graph_shading.test.ts (5 tests)
  ✓ src/math3d/expressionGuard.test.ts (12 tests)
 
- Test Files  8 passed (8)
-      Tests  128 passed (128)
+ Test Files  9 passed (9)
+      Tests  132 passed (132)
 ```
 
-### 2. Backend Agent Test Suite (Pytest — 60 Tests)
-Validates asynchronous tool calls, Executive Model dispatching across 40+ providers, thinking mode parameter normalization, DuckDuckGo web search, YouTube transcript analysis, interactive quiz payload creation, autonomous slide navigation, memory recall, persistent JSON config stores, student and tutor name personalization without git leaks, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
+### 2. Backend Agent Test Suite (Pytest — 64 Tests)
+Validates asynchronous tool calls, pedagogical comparison table rendering, Executive Model dispatching across 40+ providers, thinking mode parameter normalization, DuckDuckGo web search, YouTube transcript analysis, interactive quiz payload creation, autonomous slide navigation, memory recall, persistent JSON config stores, student and tutor name personalization without git leaks, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
 ```bash
 # In active Python virtual environment:
 pytest tests/agent/ -v
 ```
 ```
 tests/agent/test_agent.py .                                              [  1%]
-tests/agent/test_config_store.py ..                                      [  5%]
-tests/agent/test_ext_thinking_auto_heal.py ...                           [ 10%]
-tests/agent/test_intermediate_executive.py .........                     [ 25%]
-tests/agent/test_internet_and_youtube.py ......                          [ 35%]
-tests/agent/test_language_config.py .........                            [ 50%]
-tests/agent/test_media_and_extended_thinking.py ....                     [ 56%]
-tests/agent/test_mlf_instructions.py .                                   [ 58%]
-tests/agent/test_problem7_fixes.py ...........                           [ 75%]
-tests/agent/test_quiz_feature.py ...........                             [ 91%]
-tests/agent/test_slide_navigation_and_memory.py ...                      [ 96%]
+tests/agent/test_config_store.py ..                                      [  4%]
+tests/agent/test_ext_thinking_auto_heal.py ...                           [  9%]
+tests/agent/test_intermediate_executive.py .........                     [ 23%]
+tests/agent/test_internet_and_youtube.py ......                          [ 32%]
+tests/agent/test_language_config.py .........                            [ 46%]
+tests/agent/test_media_and_extended_thinking.py ....                     [ 53%]
+tests/agent/test_mlf_instructions.py .                                   [ 54%]
+tests/agent/test_problem7_fixes.py ...........                           [ 70%]
+tests/agent/test_quiz_feature.py ...........                             [ 87%]
+tests/agent/test_slide_navigation_and_memory.py ...                      [ 90%]
+tests/agent/test_table_tool.py ....                                      [ 96%]
 tests/agent/test_video_control.py ..                                     [100%]
 
-============================= 60 passed in 7.30s =============================
+============================= 64 passed in 6.60s =============================
 ```
 
 ### 3. Frontend Production Build Check
