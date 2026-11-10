@@ -42,15 +42,51 @@ async def test_visual_audit_blank_canvas():
 
 
 @pytest.mark.asyncio
-async def test_visual_audit_active_drawing_fallback():
-    """Verifies that an image with substantive drawn pixels passes pixel-variance validation."""
+async def test_visual_audit_missing_frame_fails():
+    """Verifies that missing frames strictly fail instead of bypassing."""
+    agent = _create_mock_agent()
+    agent.latest_whiteboard_frame_bytes = None
+    agent._latest_render_snapshot = None
+
+    res = await agent._perform_visual_audit(expected_action="table", expected_title="Test Table")
+
+    assert res["passed"] is False
+    assert res["status"] == "FAILED"
+    assert "missing_frame_timeout" in res["method"]
+
+
+@pytest.mark.asyncio
+async def test_visual_audit_severe_crowding_squished_diagram_fails():
+    """Verifies that diagram nodes crowded into an extremely narrow strip (<140px) fail the spatial check."""
     agent = _create_mock_agent()
 
-    # Create a canvas with active drawn white and cyan table cells
-    active_arr = np.full((200, 200, 3), [19, 19, 36], dtype=np.uint8)
-    # Draw bright content in the center
-    active_arr[50:150, 50:180] = [78, 205, 196]  # Cyan header
-    active_arr[100:140, 60:170] = [255, 255, 255]  # White text
+    # Create a wide 1280x720 canvas
+    arr = np.full((720, 1280, 3), [19, 19, 36], dtype=np.uint8)
+    # Cram all drawn elements into a tiny 80px strip on the far right (x from 1100 to 1180)
+    arr[300:400, 1100:1180] = [78, 205, 196]
+
+    img = Image.fromarray(arr, "RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+
+    agent.latest_whiteboard_frame_bytes = buf.getvalue()
+    res = await agent._perform_visual_audit(expected_action="diagram", expected_title="Post-Production Pipeline")
+
+    assert res["passed"] is False
+    assert res["status"] == "FAILED"
+    assert res["method"] == "spatial_histogram"
+    assert "crowding" in res["reason"]
+
+
+@pytest.mark.asyncio
+async def test_visual_audit_active_drawing_fallback():
+    """Verifies that an image with substantive well-spaced drawn pixels passes validation."""
+    agent = _create_mock_agent()
+
+    # Create a canvas with active drawn white and cyan table cells well spaced across 600px width
+    active_arr = np.full((720, 1280, 3), [19, 19, 36], dtype=np.uint8)
+    active_arr[200:500, 200:800] = [78, 205, 196]  # Cyan header & cells
+    active_arr[250:450, 220:780] = [255, 255, 255]  # White text
 
     img = Image.fromarray(active_arr, "RGB")
     buf = io.BytesIO()

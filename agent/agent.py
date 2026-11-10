@@ -672,8 +672,8 @@ class TutorAgent(Agent):
     ) -> dict:
         """
         Executes a dual-layer closed-loop visual audit of the rendered whiteboard canvas:
-        Layer 1: Fast Pixel Variance & Blank Canvas Audit (NumPy/PIL) in <2ms.
-        Layer 2: Multimodal VLM Quality Verification (Gemini Flash) in ~250ms.
+        Layer 1: Fast Pixel Variance & Spatial Crowding Audit (NumPy/PIL) in <2ms.
+        Layer 2: Multimodal VLM Quality & Overlap Verification (Gemini Flash) in ~250ms.
         """
         img_bytes = None
         if self._latest_render_snapshot and self._latest_render_snapshot.get("image_bytes"):
@@ -683,10 +683,10 @@ class TutorAgent(Agent):
 
         if not img_bytes:
             return {
-                "passed": True,
-                "status": "UNVERIFIED",
-                "reason": "No camera or whiteboard vision stream frame available for visual audit.",
-                "method": "bypass",
+                "passed": False,
+                "status": "FAILED",
+                "reason": "No verification frame arrived from client within timeout. Visual audit could not verify render.",
+                "method": "missing_frame_timeout",
             }
 
         # ── Layer 1: Fast Pixel & Blank Canvas Verification ──
@@ -708,6 +708,22 @@ class TutorAgent(Agent):
                     "reason": "Whiteboard canvas is completely blank or dark. The visual element failed to render.",
                     "method": "pixel_variance",
                 }
+
+            # Spatial Crowding / Squishing Check:
+            # If active drawn pixels are concentrated into an extremely narrow horizontal strip (<140px width)
+            # while the rest of the canvas is empty, flag as cramped layout defect!
+            active_mask = np.any(pixel_diff > 25.0, axis=2)
+            x_activity = np.where(np.any(active_mask, axis=0))[0]
+            if len(x_activity) > 50:
+                drawn_width = int(x_activity[-1] - x_activity[0])
+                if expected_action in ("diagram", "flowchart", "table") and drawn_width < 140:
+                    print(f">>> [AGENT-VISUAL-AUDIT] FAILED: Severe spatial crowding/squishing detected (width={drawn_width}px)")
+                    return {
+                        "passed": False,
+                        "status": "FAILED",
+                        "reason": f"Severe spatial crowding detected: Diagram nodes are squished into only {drawn_width}px width.",
+                        "method": "spatial_histogram",
+                    }
         except Exception as e_px:
             print(f">>> [AGENT-VISUAL-AUDIT] Pixel check notice: {e_px}")
 
@@ -728,15 +744,24 @@ class TutorAgent(Agent):
             if api_key:
                 client = genai.Client(api_key=api_key)
                 audit_prompt = (
-                    "You are an automated visual QA auditor for an educational whiteboard canvas.\n"
+                    "You are a strict automated visual quality auditor for an educational whiteboard canvas.\n"
                     f"Expected element to verify on the board: Type='{expected_action}', Title/Content='{expected_title}'.\n"
                     "Inspect the attached image carefully.\n"
-                    "Requirements:\n"
-                    "1. Is this element or its title/structure visibly drawn or rendered on the canvas? (true/false)\n"
-                    "2. Where is it located? ('left', 'right', 'center', 'bottom', or 'full')\n"
-                    "3. Respond strictly in valid JSON format:\n"
-                    "{\"visible\": true, \"location\": \"right\", \"readable\": true, \"defect\": \"none\"}\n"
-                    "If the canvas is blank or the requested item is absent, set visible: false."
+                    "Evaluate the visual rendering according to these strict rules:\n"
+                    "1. Is the element visibly drawn on the canvas? (true/false)\n"
+                    "2. Are there visual defects, overlapping boxes, squished/cramped nodes, unreadable text, or detached arrows? (true/false)\n"
+                    "3. Is the layout clean, readable, and well-spaced? (true/false)\n"
+                    "4. Where is it located? ('left', 'right', 'center', 'bottom', or 'full')\n"
+                    "Respond STRICTLY in valid JSON format:\n"
+                    "{\n"
+                    '  "visible": true,\n'
+                    '  "has_defects": false,\n'
+                    '  "has_overlap": false,\n'
+                    '  "is_clean_and_readable": true,\n'
+                    '  "location": "center",\n'
+                    '  "defect_description": "none"\n'
+                    "}\n"
+                    "CRITICAL MANDATE: If boxes overlap, text collides, nodes are squished together, or arrows point into empty space, you MUST set has_defects: true, has_overlap: true, is_clean_and_readable: false, and describe the defect in defect_description!"
                 )
 
                 for candidate_model in [
@@ -762,10 +787,18 @@ class TutorAgent(Agent):
                         if resp and resp.text:
                             parsed = json.loads(resp.text)
                             is_visible = bool(parsed.get("visible", False))
+                            has_defects = bool(parsed.get("has_defects", False))
+                            has_overlap = bool(parsed.get("has_overlap", False))
+                            is_clean = bool(parsed.get("is_clean_and_readable", False))
+                            defect_desc = str(parsed.get("defect_description", "none"))
                             loc = str(parsed.get("location", "whiteboard"))
-                            defect = str(parsed.get("defect", "none"))
-                            print(f">>> [AGENT-VISUAL-AUDIT] VLM ({candidate_model}) result: visible={is_visible}, loc={loc}, defect={defect}")
-                            if is_visible:
+
+                            print(
+                                f">>> [AGENT-VISUAL-AUDIT] VLM ({candidate_model}) result: "
+                                f"visible={is_visible}, clean={is_clean}, overlap={has_overlap}, defect={defect_desc}"
+                            )
+
+                            if is_visible and is_clean and not has_overlap and not has_defects:
                                 return {
                                     "passed": True,
                                     "status": "PASSED",
@@ -773,10 +806,17 @@ class TutorAgent(Agent):
                                     "method": f"vlm_{candidate_model}",
                                 }
                             else:
+                                failure_reason = (
+                                    defect_desc
+                                    if defect_desc and defect_desc.lower() != "none"
+                                    else "Visual defect, overlapping boxes, or cramped layout detected."
+                                )
+                                if not is_visible:
+                                    failure_reason = "Element was not visually detected on canvas."
                                 return {
                                     "passed": False,
                                     "status": "FAILED",
-                                    "reason": f"Visual auditor confirmed element is NOT visible on canvas (defect: {defect}).",
+                                    "reason": failure_reason,
                                     "method": f"vlm_{candidate_model}",
                                 }
                     except Exception:
@@ -816,7 +856,7 @@ class TutorAgent(Agent):
                         self._render_verification_event.wait(),
                         return_exceptions=True,
                     ),
-                    timeout=0.45,
+                    timeout=0.6,
                 )
             except Exception:
                 pass
@@ -825,19 +865,22 @@ class TutorAgent(Agent):
 
         feedback = action_summary
 
-        # Perform the closed-loop visual audit
-        try:
-            audit_res = await self._perform_visual_audit(expected_action, expected_title)
-            if audit_res.get("passed"):
-                feedback += f" [Visual Self-Audit: PASSED (Verified visible on {audit_res.get('location', 'whiteboard')} via {audit_res.get('method', 'visual_engine')})]"
-            else:
-                feedback += (
-                    f" [Visual Self-Audit: FAILED - {audit_res.get('reason', 'Element was not visually rendered')}. "
-                    "CRITICAL PEDAGOGICAL DIRECTIVE: DO NOT tell the student this element is visible on the board! "
-                    "Briefly inform the student of a technical rendering delay, or apologize and proceed verbally.]"
-                )
-        except Exception as e_va:
-            print(f">>> [AGENT] Visual audit wrapper notice: {e_va}")
+        # Perform the closed-loop visual audit only when an active client is present or frame exists
+        if has_remote_client or self.latest_whiteboard_frame_bytes or self._latest_render_snapshot:
+            try:
+                audit_res = await self._perform_visual_audit(expected_action, expected_title)
+                if audit_res.get("passed"):
+                    feedback += f" [Visual Self-Audit: PASSED (Verified visible on {audit_res.get('location', 'whiteboard')} via {audit_res.get('method', 'visual_engine')})]"
+                else:
+                    feedback += (
+                        f" [Visual Self-Audit: FAILED - {audit_res.get('reason', 'Element was not visually rendered')}. "
+                        "CRITICAL PEDAGOGICAL DIRECTIVE: DO NOT tell the student this element is visible, clean, or readable on the board! "
+                        "Briefly inform the student of a technical rendering/layout issue, apologize, and proceed verbally or fix in place.]"
+                    )
+            except Exception as e_va:
+                print(f">>> [AGENT] Visual audit wrapper notice: {e_va}")
+        else:
+            feedback += " [Visual Self-Audit: SKIPPED (Offline / No remote client connected)]"
         sl = getattr(self, "spatial_layout", None)
         if isinstance(sl, dict) and sl:
             l_occ = "Occupied" if sl.get("leftColumn", {}).get("occupied") else "Empty"
