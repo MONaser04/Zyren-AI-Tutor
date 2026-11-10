@@ -311,6 +311,14 @@ export function getShapeBounds(shape: any): BoundingBox {
         height: shape.height ?? 380,
       };
 
+    case 'table':
+      return {
+        x,
+        y,
+        width: Math.min(1600, shape.width ?? 800),
+        height: Math.min(800, shape.height ?? 300),
+      };
+
     case 'image':
     case 'video':
       return {

@@ -57,13 +57,13 @@ async def test_draw_table_publishes_valid_table_payload():
     published_bytes = agent._room.local_participant.publish_data.call_args[0][0]
     payload = json.loads(published_bytes.decode("utf-8"))
 
-    assert payload.get("type") == "agent_action"
-    action = payload.get("action", {})
-    assert action.get("kind") == "shape"
-    assert action.get("shapeType") == "table"
-    assert action.get("label") == "Web Frameworks Benchmark"
+    assert payload.get("type") == "shape"
+    shape_payload = payload.get("payload", {})
+    assert shape_payload.get("kind") == "shape"
+    assert shape_payload.get("shapeType") == "table"
+    assert shape_payload.get("label") == "Web Frameworks Benchmark"
 
-    opts = action.get("options", {})
+    opts = shape_payload.get("options", {})
     assert opts.get("title") == "Web Frameworks Benchmark"
     assert opts.get("columns") == columns
     assert opts.get("rows") == rows

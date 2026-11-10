@@ -2159,8 +2159,8 @@ class TutorAgent(Agent):
 
         table_id = f"table_{int(time.time() * 1000)}"
         payload = {
-            "type": "agent_action",
-            "action": {
+            "type": "shape",
+            "payload": {
                 "kind": "shape",
                 "shapeType": "table",
                 "id": table_id,
@@ -2187,8 +2187,9 @@ class TutorAgent(Agent):
             reliable=True,
         )
         print(f">>> [AGENT] Dispatched draw_table: '{title}' ({len(col_list)} cols, {len(row_list)} rows)")
-        await asyncio.sleep(0.01)
-        return f"Drawn comparison table '{title}' with {len(col_list)} columns and {len(row_list)} rows on the whiteboard."
+        return await self._wait_for_board_sync_and_audit(
+            f"Drawn comparison table '{title}' with {len(col_list)} columns and {len(row_list)} rows on the whiteboard."
+        )
 
     @llm.function_tool(
         description="Deploy an interactive instant quiz directly onto the whiteboard canvas to assess the student's understanding. Supports quiz_type='multiple_choice', 'true_false', 'matching', 'fill_in_the_blank', 'ordering', or 'short_answer'. The student can answer via click/touch, speech/voice, handwriting, or drawing a circle/line on the board. MANDATORY: For multiple_choice, options MUST be a list of objects with 'id' ('opt_1', 'opt_2'), 'label' ('A', 'B'), 'text' (the option sentence), and 'isCorrect' (true on EXACTLY ONE correct option). Specify 'correct_option' (e.g. 'A') as well."

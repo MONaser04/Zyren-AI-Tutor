@@ -987,6 +987,19 @@ export function Whiteboard({
                 toY: s.toY,
                 label: s.options?.label,
               })),
+            tables: (activePage?.shapes || [])
+              .filter((s) => s.shapeType === 'table')
+              .map((s) => ({
+                id: s.id,
+                title: s.options?.title || s.label || 'Table',
+                columns: s.options?.columns || [],
+                rowCount: (s.options?.rows || []).length,
+                theme: s.options?.theme || 'cyan',
+                x: s.x,
+                y: s.y,
+                width: s.width,
+                height: s.height,
+              })),
             mediaItems: (() => {
               const runtimeMap = new Map(
                 (mediaRef.current?.getRuntimeStates() || []).map((rt) => [rt.id, rt])
@@ -2598,6 +2611,32 @@ export function Whiteboard({
     );
   }, []);
 
+  const handleRemoveTable = useCallback((id: string) => {
+    setPages((prev) =>
+      prev.map((p, idx) =>
+        idx === activePageIndexRef.current
+          ? {
+              ...p,
+              shapes: p.shapes.filter((s) => s.id !== id),
+            }
+          : p
+      )
+    );
+  }, []);
+
+  const handleTablePositionUpdate = useCallback((id: string, newX: number, newY: number) => {
+    setPages((prev) =>
+      prev.map((p, idx) =>
+        idx === activePageIndexRef.current
+          ? {
+              ...p,
+              shapes: p.shapes.map((s) => (s.id === id ? { ...s, x: newX, y: newY } : s)),
+            }
+          : p
+      )
+    );
+  }, []);
+
   const handleQuizAnswerSubmitted = useCallback(
     (
       quizId: string,
@@ -3303,6 +3342,48 @@ export function Whiteboard({
               msg.payload?.feedback || ''
             );
           }
+        } else if (msg.type === 'table') {
+          const tablePayload = msg.payload || msg.options || {};
+          const drawPayload = {
+            kind: 'shape',
+            shapeType: 'table',
+            id: tablePayload.id || `table_${Date.now()}`,
+            x: tablePayload.x ?? 980,
+            y: tablePayload.y ?? 180,
+            width: tablePayload.width ?? 820,
+            height: tablePayload.height ?? 260,
+            label: tablePayload.title || '',
+            options: tablePayload,
+          };
+          engine.onDrawCommand({
+            id: `live-table-${Date.now()}`,
+            type: 'shape',
+            scheduledTime,
+            commitGroup: `live-group-${Date.now()}`,
+            payload: drawPayload as any,
+          });
+        } else if (msg.type === 'agent_action' || msg.action) {
+          const actionPayload = msg.action || msg.payload || {};
+          if (actionPayload.kind === 'shape' || actionPayload.shapeType) {
+            engine.onDrawCommand({
+              id: actionPayload.id || `live-${Date.now()}-${Math.random()}`,
+              type: 'shape',
+              scheduledTime,
+              commitGroup: `live-group-${Date.now()}`,
+              payload: actionPayload,
+            });
+          } else if (actionPayload.kind === 'handwriting') {
+            if (actionPayload.text) {
+              actionPayload.charTimings = generateTimings(actionPayload.text, scheduledTime, 0.04);
+            }
+            engine.onDrawCommand({
+              id: actionPayload.id || `live-${Date.now()}-${Math.random()}`,
+              type: 'handwriting',
+              scheduledTime,
+              commitGroup: `live-group-${Date.now()}`,
+              payload: actionPayload,
+            });
+          }
         } else if (msg.type === 'shape' || msg.type === 'handwriting') {
           const drawPayload = msg.payload;
 
@@ -3851,6 +3932,8 @@ export function Whiteboard({
         <TableOverlay
           ref={tableRef}
           zoom={transform.zoom}
+          onRemoveTable={handleRemoveTable}
+          onUpdatePosition={handleTablePositionUpdate}
         />
 
         {/* Layer 6: User Drawing Overlay (Handwriting & Text input by the user) */}
