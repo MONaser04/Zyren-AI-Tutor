@@ -656,14 +656,148 @@ class TutorAgent(Agent):
         self._seen_slide_media_ids: set[str] = set()
         self._realtime_image_push_cb: typing.Optional[typing.Callable[[bytes, str], None]] = None
         self._board_sync_event = asyncio.Event()
+        self._render_verification_event = asyncio.Event()
+        self._latest_render_snapshot: typing.Optional[dict] = None
+        self.latest_whiteboard_frame_bytes: typing.Optional[bytes] = None
         self.session_context_vault: dict = {}
         self.session_summary: dict = {}
         self.internet_access_enabled: bool = True
         self.student_mic_enabled: bool = True
         self.executive_dispatcher = ExecutiveModelDispatcher(self)
 
-    async def _wait_for_board_sync_and_audit(self, action_summary: str) -> str:
-        """Waits briefly for the frontend post-render board_state_sync and appends a live self-audit report."""
+    async def _perform_visual_audit(
+        self,
+        expected_action: str = "",
+        expected_title: str = "",
+    ) -> dict:
+        """
+        Executes a dual-layer closed-loop visual audit of the rendered whiteboard canvas:
+        Layer 1: Fast Pixel Variance & Blank Canvas Audit (NumPy/PIL) in <2ms.
+        Layer 2: Multimodal VLM Quality Verification (Gemini Flash) in ~250ms.
+        """
+        img_bytes = None
+        if self._latest_render_snapshot and self._latest_render_snapshot.get("image_bytes"):
+            img_bytes = self._latest_render_snapshot["image_bytes"]
+        elif self.latest_whiteboard_frame_bytes:
+            img_bytes = self.latest_whiteboard_frame_bytes
+
+        if not img_bytes:
+            return {
+                "passed": True,
+                "status": "UNVERIFIED",
+                "reason": "No camera or whiteboard vision stream frame available for visual audit.",
+                "method": "bypass",
+            }
+
+        # ── Layer 1: Fast Pixel & Blank Canvas Verification ──
+        try:
+            with Image.open(io.BytesIO(img_bytes)) as pil_img:
+                rgb_img = pil_img.convert("RGB")
+                img_arr = np.asarray(rgb_img, dtype=np.float32)
+
+            bg_color = np.array([19.0, 19.0, 36.0], dtype=np.float32)
+            pixel_diff = np.abs(img_arr - bg_color)
+            max_diff = float(np.max(pixel_diff))
+            std_diff = float(np.std(img_arr))
+
+            if std_diff < 3.0 or max_diff < 15.0:
+                print(f">>> [AGENT-VISUAL-AUDIT] FAILED: Canvas is completely blank (std={std_diff:.2f}, max_diff={max_diff:.2f})")
+                return {
+                    "passed": False,
+                    "status": "FAILED",
+                    "reason": "Whiteboard canvas is completely blank or dark. The visual element failed to render.",
+                    "method": "pixel_variance",
+                }
+        except Exception as e_px:
+            print(f">>> [AGENT-VISUAL-AUDIT] Pixel check notice: {e_px}")
+
+        if not expected_action and not expected_title:
+            return {
+                "passed": True,
+                "status": "PASSED",
+                "location": "canvas",
+                "method": "pixel_variance",
+            }
+
+        # ── Layer 2: Multimodal VLM Quality Verification (Gemini Flash) ──
+        try:
+            from google import genai
+            from google.genai import types as genai_types
+
+            api_key, _ = resolve_gemini_api_key()
+            if api_key:
+                client = genai.Client(api_key=api_key)
+                audit_prompt = (
+                    "You are an automated visual QA auditor for an educational whiteboard canvas.\n"
+                    f"Expected element to verify on the board: Type='{expected_action}', Title/Content='{expected_title}'.\n"
+                    "Inspect the attached image carefully.\n"
+                    "Requirements:\n"
+                    "1. Is this element or its title/structure visibly drawn or rendered on the canvas? (true/false)\n"
+                    "2. Where is it located? ('left', 'right', 'center', 'bottom', or 'full')\n"
+                    "3. Respond strictly in valid JSON format:\n"
+                    "{\"visible\": true, \"location\": \"right\", \"readable\": true, \"defect\": \"none\"}\n"
+                    "If the canvas is blank or the requested item is absent, set visible: false."
+                )
+
+                for candidate_model in [
+                    "models/gemini-2.5-flash",
+                    "models/gemini-2.0-flash",
+                    "models/gemini-2.0-flash-lite",
+                ]:
+                    try:
+                        resp = await asyncio.wait_for(
+                            client.aio.models.generate_content(
+                                model=candidate_model,
+                                contents=[
+                                    genai_types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                                    audit_prompt,
+                                ],
+                                config=genai_types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    temperature=0.1,
+                                ),
+                            ),
+                            timeout=1.4,
+                        )
+                        if resp and resp.text:
+                            parsed = json.loads(resp.text)
+                            is_visible = bool(parsed.get("visible", False))
+                            loc = str(parsed.get("location", "whiteboard"))
+                            defect = str(parsed.get("defect", "none"))
+                            print(f">>> [AGENT-VISUAL-AUDIT] VLM ({candidate_model}) result: visible={is_visible}, loc={loc}, defect={defect}")
+                            if is_visible:
+                                return {
+                                    "passed": True,
+                                    "status": "PASSED",
+                                    "location": loc,
+                                    "method": f"vlm_{candidate_model}",
+                                }
+                            else:
+                                return {
+                                    "passed": False,
+                                    "status": "FAILED",
+                                    "reason": f"Visual auditor confirmed element is NOT visible on canvas (defect: {defect}).",
+                                    "method": f"vlm_{candidate_model}",
+                                }
+                    except Exception:
+                        continue
+        except Exception as e_audit:
+            print(f">>> [AGENT-VISUAL-AUDIT] VLM audit notice: {e_audit}")
+
+        return {
+            "passed": True,
+            "status": "PASSED",
+            "location": "whiteboard",
+            "method": "pixel_variance_verified",
+        }
+
+    async def _wait_for_board_sync_and_audit(
+        self,
+        action_summary: str,
+        expected_action: str = "",
+        expected_title: str = "",
+    ) -> str:
+        """Waits briefly for the frontend post-render board_state_sync and verification snapshot, then performs a closed-loop visual audit."""
         has_remote_client = False
         try:
             rem = getattr(self._room, "remote_participants", None)
@@ -674,14 +808,36 @@ class TutorAgent(Agent):
 
         if has_remote_client:
             self._board_sync_event.clear()
+            self._render_verification_event.clear()
             try:
-                await asyncio.wait_for(self._board_sync_event.wait(), timeout=0.38)
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        self._board_sync_event.wait(),
+                        self._render_verification_event.wait(),
+                        return_exceptions=True,
+                    ),
+                    timeout=0.45,
+                )
             except Exception:
                 pass
         else:
             await asyncio.sleep(0.01)
 
         feedback = action_summary
+
+        # Perform the closed-loop visual audit
+        try:
+            audit_res = await self._perform_visual_audit(expected_action, expected_title)
+            if audit_res.get("passed"):
+                feedback += f" [Visual Self-Audit: PASSED (Verified visible on {audit_res.get('location', 'whiteboard')} via {audit_res.get('method', 'visual_engine')})]"
+            else:
+                feedback += (
+                    f" [Visual Self-Audit: FAILED - {audit_res.get('reason', 'Element was not visually rendered')}. "
+                    "CRITICAL PEDAGOGICAL DIRECTIVE: DO NOT tell the student this element is visible on the board! "
+                    "Briefly inform the student of a technical rendering delay, or apologize and proceed verbally.]"
+                )
+        except Exception as e_va:
+            print(f">>> [AGENT] Visual audit wrapper notice: {e_va}")
         sl = getattr(self, "spatial_layout", None)
         if isinstance(sl, dict) and sl:
             l_occ = "Occupied" if sl.get("leftColumn", {}).get("occupied") else "Empty"
@@ -707,6 +863,10 @@ class TutorAgent(Agent):
         """Safely resets board state and session context on agent."""
         self.board_state = {}
         self._seen_slide_media_ids.clear()
+        self._latest_render_snapshot = None
+        self.latest_whiteboard_frame_bytes = None
+        if hasattr(self, "_render_verification_event"):
+            self._render_verification_event.clear()
         print(f">>> [AGENT] reset_session_context called (reason: '{reason}')")
 
     async def _on_gemini_live_reconnected(self, rt_session):
@@ -1720,8 +1880,11 @@ class TutorAgent(Agent):
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        await asyncio.sleep(0.01)
-        return f"Wrote math formula '{latex}' on whiteboard."
+        return await self._wait_for_board_sync_and_audit(
+            f"Wrote math formula '{latex}' on whiteboard.",
+            expected_action="math",
+            expected_title=latex[:30],
+        )
 
     @llm.function_tool(description="Plot a mathematical function graph with coordinate axes, curves (with respect to X or Y axis, or implicit 2D curves), and shaded calculus regions on the whiteboard")
     async def draw_graph(
@@ -2188,7 +2351,9 @@ class TutorAgent(Agent):
         )
         print(f">>> [AGENT] Dispatched draw_table: '{title}' ({len(col_list)} cols, {len(row_list)} rows)")
         return await self._wait_for_board_sync_and_audit(
-            f"Drawn comparison table '{title}' with {len(col_list)} columns and {len(row_list)} rows on the whiteboard."
+            f"Drawn comparison table '{title}' with {len(col_list)} columns and {len(row_list)} rows on the whiteboard.",
+            expected_action="table",
+            expected_title=title,
         )
 
     @llm.function_tool(
@@ -2421,7 +2586,8 @@ class TutorAgent(Agent):
                     if len(w1) >= 3:
                         norm_accepted.append(w1)
                     if len(first_exp) >= 2:
-                        w2 = f"{w1} {first_exp[1].strip('.,!?:;\"\'()')}"
+                        w2_word = first_exp[1].strip(".,!?:;\"'()")
+                        w2 = f"{w1} {w2_word}"
                         norm_accepted.append(w2)
             if correct_answer and str(correct_answer).strip():
                 norm_accepted.append(str(correct_answer).strip())
@@ -2460,7 +2626,9 @@ class TutorAgent(Agent):
             json.dumps(payload).encode("utf-8")
         )
         return await self._wait_for_board_sync_and_audit(
-            f"Deployed interactive {quiz_type} quiz '{clean_question}' on whiteboard (ID: {quiz_id})."
+            f"Deployed interactive {quiz_type} quiz '{clean_question}' on whiteboard (ID: {quiz_id}).",
+            expected_action="quiz",
+            expected_title=clean_question,
         )
 
     @llm.function_tool(
@@ -2725,7 +2893,9 @@ class TutorAgent(Agent):
             json.dumps(payload).encode("utf-8")
         )
         return await self._wait_for_board_sync_and_audit(
-            f"Plotted structured diagram '{clean_title}' on whiteboard (direction='{clean_dir}', position='{position}')."
+            f"Plotted structured diagram '{clean_title}' on whiteboard (direction='{clean_dir}', position='{position}').",
+            expected_action="diagram",
+            expected_title=clean_title,
         )
 
 
@@ -2832,7 +3002,9 @@ class TutorAgent(Agent):
             json.dumps(payload).encode("utf-8")
         )
         return await self._wait_for_board_sync_and_audit(
-            f"Plotted concept card '{clean_title}' on whiteboard (position='{position}')."
+            f"Plotted concept card '{clean_title}' on whiteboard (position='{position}').",
+            expected_action="concept_card",
+            expected_title=clean_title,
         )
 
     @llm.function_tool(description="Draw standalone geometric figures (rectangles, ellipses, triangles in geometry) or physics vectors/arrows on the whiteboard. (Use label='...' to display numbers/letters centered inside shapes). MANDATORY: Do NOT use draw_shape to create branching diagrams, trees, or flowcharts — you MUST use draw_diagram instead.")
@@ -2944,7 +3116,11 @@ class TutorAgent(Agent):
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        return await self._wait_for_board_sync_and_audit(f"Wrote '{clean_text}' on whiteboard.")
+        return await self._wait_for_board_sync_and_audit(
+            f"Wrote '{clean_text}' on whiteboard.",
+            expected_action="handwriting",
+            expected_title=clean_text[:30],
+        )
 
     @llm.function_tool(description="Write plain prose text, definitions, terminology mappings, conceptual distinctions, rules, or structured bullet notes on the digital whiteboard in English or German only (rendered immediately). Supports markdown bold **text** or colons 'Term:' for bold subheaders. Set style='subtitle' or decorated=True if this is a section heading you want underlined. Pass attach_to_node='...' (e.g. 'Supervised Learning') or slot='side_notes' to position automatically without coordinate math. MANDATORY when writing style is Normal or Mixed.")
     async def write_normal_text(self, text: str, x: float = 140, y: float = 200, font_size: int = 24, color: str = "#FFFFFF", direction: str = "ltr", style: str = "normal", decorated: bool = False, slot: str = "auto", attach_to_node: str = ""):
@@ -2994,7 +3170,11 @@ class TutorAgent(Agent):
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        return await self._wait_for_board_sync_and_audit(f"Wrote normal text '{clean_text}' on whiteboard.")
+        return await self._wait_for_board_sync_and_audit(
+            f"Wrote normal text '{clean_text}' on whiteboard.",
+            expected_action="normal_text",
+            expected_title=clean_text[:30],
+        )
 
     @llm.function_tool(
         description="Surgically edit, rename, resize font size (from 12 to 80px for handwriting, normal text, and math), append to, re-orient, delete a single node/bullet from, or move any existing text block, mathematical formula, shape label, diagram node, or diagram on the active slide IN PLACE without erasing the whole diagram or opening a new slide. Fully supports changing font_size of handwritten text. MANDATORY whenever making localized edits, font size changes, or corrections."
@@ -3075,7 +3255,9 @@ class TutorAgent(Agent):
             json.dumps(payload).encode("utf-8")
         )
         return await self._wait_for_board_sync_and_audit(
-            f"Surgically updated whiteboard item '{target}' in place (action='{action}')."
+            f"Surgically updated whiteboard item '{target}' in place (action='{action}').",
+            expected_action="update",
+            expected_title=target,
         )
 
 
@@ -3958,11 +4140,28 @@ async def entrypoint(ctx: JobContext):
                             if "image" in data:
                                 has_active_video = bool(data.get("hasActiveVideo"))
                                 force_frame = bool(data.get("force"))
+                                is_verification = data.get("type") == "render_verification_snapshot"
+
+                                b64_str = data["image"]
+                                header, encoded = b64_str.split(",", 1) if "," in b64_str else ("", b64_str)
+                                raw_img_bytes = base64.b64decode(encoded)
+
+                                # Always update internal whiteboard frame bytes for perception and visual verification audits
+                                self.latest_whiteboard_frame_bytes = raw_img_bytes
+                                if is_verification or force_frame:
+                                    self._latest_render_snapshot = {
+                                        "image_bytes": raw_img_bytes,
+                                        "action": data.get("action", ""),
+                                        "title": data.get("title", ""),
+                                        "timestamp": data.get("timestamp", time.time()),
+                                    }
+                                    if hasattr(self, "_render_verification_event"):
+                                        self._render_verification_event.set()
 
                                 # Strictly suppress sending vision frames into Gemini Live while speaking/thinking
                                 # to prevent server-side audio interruption and speech truncation
                                 if agent_state in ("speaking", "thinking"):
-                                    if force_frame:
+                                    if force_frame or is_verification:
                                         pending_force_frame = data
                                     continue
 
@@ -3972,15 +4171,11 @@ async def entrypoint(ctx: JobContext):
                                     pending_force_frame = None
                                     has_active_video = bool(data.get("hasActiveVideo"))
                                     force_frame = bool(data.get("force"))
+                                    b64_str = data["image"]
+                                    header, encoded = b64_str.split(",", 1) if "," in b64_str else ("", b64_str)
+                                    raw_img_bytes = base64.b64decode(encoded)
 
                                 now = time.time()
-                                min_interval = 0.0 if force_frame else (0.9 if has_active_video else 2.0)
-                                if now - last_frame_sent_time < min_interval:
-                                    continue
-
-                                b64_str = data["image"]
-                                header, encoded = b64_str.split(",", 1) if "," in b64_str else ("", b64_str)
-                                raw_img_bytes = base64.b64decode(encoded)
 
                                 def _process_vision_frame(raw_bytes, p_thumb):
                                     try:

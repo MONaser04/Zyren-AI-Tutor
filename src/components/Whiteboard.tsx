@@ -611,6 +611,35 @@ export function Whiteboard({
     return stageCanvas;
   }, []);
 
+  // Closed-loop visual verification audit capture (triggered immediately upon draw commands)
+  const triggerImmediateVisualAuditCapture = useCallback(
+    async (actionType: string, actionTitle?: string) => {
+      const ws = directVisionWsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        // Wait 1 RAF + microtask to ensure React DOM and canvas rendering have painted
+        await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 45)));
+        const wbCanvas = await captureCompositeWhiteboardStage(true);
+        if (wbCanvas) {
+          const dataUrl = wbCanvas.toDataURL('image/jpeg', 0.72);
+          ws.send(
+            JSON.stringify({
+              type: 'render_verification_snapshot',
+              action: actionType,
+              title: actionTitle || '',
+              image: dataUrl,
+              force: true,
+              timestamp: Date.now(),
+            })
+          );
+        }
+      } catch (err) {
+        console.warn('[VisualAudit] Immediate capture failed:', err);
+      }
+    },
+    [captureCompositeWhiteboardStage]
+  );
+
   // Unified Direct Vision Compositor (1 FPS Live Video Mode + 3s Static Dedup Mode)
   useEffect(() => {
     if (!wsConnected) {
@@ -3516,6 +3545,13 @@ export function Whiteboard({
         // Keep agent memory in sync ONLY when actual board mutations occur (never on chat_message transcript chunks)
         if (msg.type !== 'chat_message') {
           forceImmediateVisionFrameRef.current = true;
+          const targetTitle =
+            msg.payload?.options?.title ||
+            msg.payload?.label ||
+            msg.payload?.title ||
+            msg.payload?.question ||
+            '';
+          triggerImmediateVisualAuditCapture(msg.type, targetTitle);
           if (boardSyncDebounceTimerRef.current) {
             clearTimeout(boardSyncDebounceTimerRef.current);
           }
@@ -3533,7 +3569,7 @@ export function Whiteboard({
     return () => {
       room.off(RoomEvent.DataReceived, handleData);
     };
-  }, [room, addNewPage, broadcastBoardStateSync]);
+  }, [room, addNewPage, broadcastBoardStateSync, triggerImmediateVisualAuditCapture]);
 
   // Demo mode: run a scripted demonstration
   const runDemo = useCallback(async (lang: 'ar' | 'en' | 'de' = 'ar') => {

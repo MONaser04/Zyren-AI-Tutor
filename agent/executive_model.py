@@ -318,18 +318,15 @@ class ExecutiveModelDispatcher:
 
             # Dispatch action to tutor_agent
             exec_res = await self._dispatch_to_whiteboard(action_name, params)
-
-            # Trigger vision perception push so Gemini Live immediately sees the update
-            try:
-                if hasattr(self.tutor_agent, "_wait_for_board_sync_and_audit"):
-                    await self.tutor_agent._wait_for_board_sync_and_audit(f"Executive Action: {action_name}")
-            except Exception:
-                pass
+            audit_note = str(exec_res) if exec_res else ""
 
             report = (
                 f"Completed by Executive Model ({model_id} via {provider_id}): "
                 f"Action '{action_name}' executed ({latency_ms}ms). {thought}"
             )
+            if audit_note:
+                report += f" -> {audit_note}"
+
             return True, report
 
         except Exception as e:
