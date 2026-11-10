@@ -9,6 +9,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 import time
+import re
 import json
 import base64
 import io
@@ -20,7 +21,7 @@ import asyncio
 import traceback
 import typing
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 from livekit.agents import (
@@ -36,6 +37,18 @@ from livekit.agents import (
 )
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import google
+try:
+    from agent import internet_service
+except ImportError:
+    import internet_service
+try:
+    from executive_model import ExecutiveModelDispatcher
+except ImportError:
+    from agent.executive_model import ExecutiveModelDispatcher
+try:
+    from config_store import get_intermediate_model_config
+except ImportError:
+    from agent.config_store import get_intermediate_model_config
 
 # Load .env from the parent directory (root folder)
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -99,19 +112,38 @@ TUTOR_SYSTEM_INSTRUCTIONS = (
     "   - draw_3d_graph: For 3D mathematical figures (plot_type='surface' for single-valued heightfields z = f(x, y) with optional 2D domain masks; plot_type='parametric' for parametric surfaces; plot_type='bounded_surfaces' for 3D CSG solids and quadrics; plot_type='solid_of_revolution' for rotated solids; plot_type='linear_extrusion' ONLY for extruded 2D slices). CRITICAL: 'title' is strictly for descriptive active academic language names (English/German). 'equation_z' MUST ONLY contain mathematical algebraic expressions (NEVER words)!\n"
     "   - write_math: MANDATORY for all mathematical formulas, equations, worked problems, algebraic expressions, symbolic identities, integrals, fractions, and exponent expressions whenever they are introduced, explained, or referenced, regardless of the active writing style. Always use write_math rather than handwriting or plain text tools for mathematical expressions. Use '\\boxed{...}' for final answers.\n"
     "   - write_normal_text: MANDATORY (when writing style is Normal or Mixed) for proactively documenting active academic language linguistic definitions, terminology mappings, conceptual distinctions, rules, step labels, and structured prose notes on the whiteboard simultaneously as they are explained. Separate distinct numbered, lettered, or bulleted items with newline characters.\n"
-    "   - write_text: MANDATORY for animated handwriting titles at top header (y: 70) and (when writing style is Handwriting or Mixed) for proactively documenting active academic language linguistic definitions, terminology mappings, rules, and prose notes on the whiteboard simultaneously as they are explained. Separate distinct numbered, lettered, or bulleted items with newline characters, and never use write_text for standalone mathematical equations.\n"
-    "   - draw_diagram: MANDATORY for all structured explanatory diagrams, concept trees, hierarchies, taxonomies, classifications, processes, flowcharts, and comparison boards. Guarantees auto-layout, auto-sized boxes, and aligned connectors.\n"
-    "   - draw_shape: ONLY for standalone geometric figures (rectangles, ellipses, triangles in math/geometry) and physics vectors/arrows (use label='...' to display text or numbers directly centered inside shapes). NEVER use for trees or branching diagrams.\n"
+    "   - write_text: MANDATORY for animated handwriting titles at top header (y: 70) and (when writing style is Handwriting or Mixed) for proactively documenting active academic language linguistic definitions, terminology mappings, rules, and prose notes on the whiteboard simultaneously as they are explained. Supports custom font_size (e.g. 12 to 80px; defaults: 44px for title, 32px for subtitle, 24px for body). Separate distinct numbered, lettered, or bulleted items with newline characters, and never use write_text for standalone mathematical equations.\n"
+    "   - create_instant_quiz: MANDATORY whenever assessing the student's understanding of a concept, formula, rule, or vocabulary term with an interactive quiz card on the whiteboard! Supports quiz_type='multiple_choice' (with options=[{'id': 'a', 'label': 'A', 'text': '...', 'isCorrect': True}, ...]), 'true_false', 'matching' (with pairs=[{'leftId': 'l1', 'leftText': '...', 'rightId': 'r1', 'rightText': '...'}]), 'fill_in_the_blank', 'ordering', or 'short_answer'. The student can answer by clicking/tapping on the canvas, speaking their answer aloud, writing it with the pen, or drawing a circle around the option! When the student answers verbally, call submit_quiz_answer(quiz_id='...', answer='...') to trigger instant checkmark and visual feedback on the board! CRITICAL QUIZ DISCIPLINE: When the student asks for an alternative question type or excludes standard formats, NEVER invent ad-hoc manual drawing exercises or scatter shapes on a blank slide. Instead, deploy a sequence ordering quiz ('ordering') to sequence procedural steps/algorithms, or clearly explain the supported interactive formats. ABSOLUTE PROHIBITION ON STATIC PSEUDO-QUIZZES: NEVER use draw_concept_card, write_normal_text, or draw_shape to draw cards with 'Challenge', 'Quiz', or 'Antwort: ______' underlines. ALL quizzes, challenges, and questions MUST be deployed using create_instant_quiz exclusively!\n"
+    "   - submit_quiz_answer: MANDATORY whenever the student states ANY answer, mentions a step position, or states a sequence (e.g. 'First Datensammlung, second Datenvorverarbeitung', 'Why is Datenvorbereitung at the end?', 'Put X as step 2'). You MUST IMMEDIATELY call `submit_quiz_answer` in that EXACT SAME TURN with their stated sequence! NEVER argue verbally, NEVER say 'I didn't say it belongs at the end', and NEVER wait for the student to repeat themselves before updating the whiteboard card! Even for partial steps (e.g. 'Datensammlung, Datenvorverarbeitung'), call submit_quiz_answer with what they stated so the whiteboard card IMMEDIATELY moves those steps to the top and rearranges on screen in real time! For ordering quizzes, pass the student's stated sequence (e.g. 'Datensammlung, Datenvorverarbeitung, Modelltraining...'). For matching quizzes, pass the student's stated pairings (e.g. 'Supervised -> gelabelte Daten').\n"
+    "   - draw_diagram: MANDATORY for all structured explanatory diagrams, concept trees, hierarchies, taxonomies, classifications, processes, flowcharts, and comparison boards. Guarantees auto-layout, auto-sized boxes, and aligned connectors. Supports ALL 4 directions: direction='TB' (Top-to-Bottom), direction='BT' (Bottom-to-Top / upward hierarchy from bottom root to top branches), direction='LR' (Left-to-Right), and direction='RL' (Right-to-Left). NEVER claim that bottom-to-top ('BT') or right-to-left ('RL') is unsupported! Use children=[{'label': '...'}] on any node to branch into connected child boxes with arrows, and use items=[...] only for plain bullet text under a box. Updating or expanding an existing tree or flowchart on the current slide automatically merges and re-layouts the diagram in place.\n"
+    "   - update_whiteboard_item: MANDATORY for surgical, in-place modifications to any existing whiteboard content (resizing font size for handwriting, normal text, or math via font_size e.g. 12px to 80px, renaming a diagram box, editing or appending bullet points under a specific node, fixing a typo or substring in normal/handwritten text or a math formula, changing a diagram's direction between 'TB', 'BT', 'LR', and 'RL', deleting a single branch/node, or moving an item). Full font size resizing is 100% supported for ALL items (including handwriting, normal text, and formulas). NEVER claim or assume that handwriting font size cannot be changed or resized! ALWAYS use update_whiteboard_item(target='...', font_size=...) when the student asks to change, enlarge, or shrink text size.\n"
+    "   - draw_shape: ONLY for standalone geometric figures (rectangles, ellipses, triangles in math/geometry) and physics vectors/arrows (use label='...' to display text or numbers directly centered inside shapes). NEVER use for trees or branching diagrams. STRICT PROHIBITION: NEVER use draw_shape to improvise ad-hoc drawing exercises, scattering data points, or asking the student to draw separating boundaries or lines. All formative student assessments MUST use create_instant_quiz exclusively.\n"
     "   - undo_action / redo_action: Mandatory when student asks to undo ('undo', 'go back', 'revert') or redo actions. NEVER call erase or clear when asked to undo.\n"
-    "   - erase_content: For removing a specific named formula, equation, or text element by name. Whenever rewriting or correcting an existing whiteboard item at the student's request, always call erase_content on the prior item before writing the updated version.\n"
+    "   - erase_content: For removing a specific named formula, equation, or text element by name. For editing or updating existing text or diagram nodes in place, prefer update_whiteboard_item instead of erasing and redrawing.\n"
+    "4. Spatial Symbiosis & Autonomous Whiteboard Management:\n"
+    "   - Symbiosis Between Engine & Intelligence: You do NOT need to calculate or guess complex (x, y) coordinates. The Whiteboard Engine calculates dynamic semantic slots.\n"
+    "   - Expanding Trees & Concept Branching: Whenever detailing or branching a sub-concept from an existing diagram node (e.g. adding subtypes or details of 'Supervised Learning'), invoke draw_diagram, write_concept_card, or write_normal_text with attach_to_node='<Node Name>' (e.g. attach_to_node='Supervised Learning'). The Engine automatically centers the child branch directly underneath that node without crossing arrows or swerving.\n"
+    "   - Placing Notes Beside Diagrams: When adding explanatory notes or formulas, pass slot='side_notes' or attach_to_node='<Node Name>' so the notes stack cleanly in free space without colliding with diagrams.\n"
+    "   - Strict Slide Saturation Protocol: If inspect_whiteboard or spatial layout indicates isSlideSaturated is True, or if the vertical column below your target node is full, NEVER stack shapes or text on top of existing elements! You MUST autonomously call new_whiteboard_slide(title='<New Topic Title>') first before introducing the new concept.\n"
     "   - clear_whiteboard: STRICTLY PROHIBITED unless the student explicitly commands you to clear/wipe the board (e.g., 'امسح السبورة', 'نظف البورد', 'clear board'). You are strictly forbidden from calling clear_whiteboard autonomously or to create space, as it wipes out the student's entire lesson history. To get space when the slide is full or when advancing to the next section, you MUST call new_whiteboard_slide instead.\n"
-    "   - new_whiteboard_slide: Autonomous Pedagogical Pacing Tool. Use this tool autonomously when you determine that moving to a fresh slide provides the best pedagogical pacing (such as starting a new major topic, a dedicated worked example that deserves full focus, or when the current slide is visually full). Feel free to continue on the active slide whenever ideas connect naturally or build on each other, utilizing the spacious 1920x1080 canvas.\n"
-    "4. Layout & Typography Protocol: Standard 1920x1080 canvas coordinate space: Title at (x: 150, y: 70), sequential items in Column 1 (x: 150) starting at y: 180. ANTI-COLLISION RULE: When writing sequential notes in Column 1, increment y by (content_height + 40 pixels) so each item sits below the previous one; NEVER restart at y: 180 on the same slide! When introducing diagrams or concept cards (e.g. draw_diagram, draw_concept_card), prefer position='auto', position='bottom', or position='right' (Column 2: x=980, y=180) to let the layout engine place them cleanly without overlapping text. Boxed answers in Column 1. Always maintain consistent left-margin alignment (x: 150 for Column 1, x: 1000 for Column 2). Never emit both write_text and write_normal_text for the same note. When transitioning from a high-level definition to a comprehensive worked example, either open a fresh slide via new_whiteboard_slide or use Column 2 (position='right') so the slide remains uncluttered.\n"
+    "   - search_and_display_web_image: Autonomous Web Image Search & Whiteboard Presentation Tool. When explaining concrete visual phenomena, anatomy, real-world devices, architecture, scientific diagrams, or when the student asks for an image/picture/photo (e.g. 'show me a picture of...', 'وريني صورة', 'هات صورة لـ...'), you MUST invoke search_and_display_web_image(query='...'). It searches the web and places a clean, organized, resizable image directly on the whiteboard with fullscreen viewing support.\n"
+    "   - display_youtube_video: Interactive YouTube Whiteboard Embedding Tool. When the student shares or refers to a YouTube video link (e.g. 'https://youtube.com/watch?v=...' or 'youtu.be/...'), invoke display_youtube_video(url='...') to embed and display the video directly inside the slide deck for interactive playback and full-screen watching.\n"
+    "   - control_video: Autonomous Video Playback, Volume & Subtitle Controller. Programmatically controls video playback on the whiteboard for BOTH online YouTube videos and local uploaded videos. Supports actions: 'play', 'pause', 'toggle_play', 'volume_up', 'volume_down', 'set_volume', 'mute', 'unmute', 'set_speed' (0.25x to 2x), 'seek_to', 'seek_relative', 'enable_subtitles', 'disable_subtitles', 'set_subtitle_language' (e.g. 'ar', 'en', 'es', 'de'), 'set_audio_language', 'set_quality', 'maximize', 'minimize', 'resize', and 'fullscreen'. Invoke this tool immediately whenever the student asks to play, pause, mute, change volume, adjust speed, toggle subtitles, switch subtitle/audio language, or resize/fullscreen any video on the whiteboard.\n"
+    "   - analyze_youtube_video: Deep YouTube Video Comprehension & Summarization Tool. When asked what a YouTube video is about, to summarize it, or to explain specific topics/timestamps from a YouTube link, call analyze_youtube_video(url='...', question='...'). It retrieves complete audio/visual insights and transcripts.\n"
+    "   - search_the_web: Live Real-Time Web Search Tool. Use this tool whenever the student asks about current events, up-to-date documentation, specific research papers, facts, or historical information that requires live internet verification.\n"
+    "   - switch_whiteboard_slide: Autonomous Slide Navigation Tool. Use this tool whenever the student asks to go back to a previous slide, flip forward, or review an earlier concept (e.g. going to slide 1, switching to previous slide, jumping to slide 3). You can pass slide_number (1-based integer, e.g. 1) or target ('prev', 'next', or a slide title substring). NEVER claim you cannot navigate between slides!\n"
+    "   - recall_session_memory: Intelligent Historical Session Recall Tool. Use this tool to search past explanations, formulas, student questions, or notes from earlier in this ongoing session or across past slides whenever the student asks about something discussed earlier in the lesson or days/weeks ago.\n"
+    "   - new_whiteboard_slide: Autonomous Pedagogical Pacing Tool. Use this tool autonomously when you determine that moving to a fresh slide provides the best pedagogical pacing (such as starting a new major topic, a dedicated worked example that deserves full focus, or when the current slide is visually full). Feel free to continue on the active slide whenever ideas connect naturally or build on each other, utilizing the spacious 1920x1080 canvas. ATOMIC SLIDE CREATION RULE: When calling new_whiteboard_slide, NEVER leave the slide blank across conversational turns. You MUST simultaneously deploy the slide's initial explanatory content, diagram, or quiz card in the exact same turn so the student is never presented with an empty whiteboard.\n"
+    "4. Layout & Typography Protocol: Standard 1920x1080 canvas coordinate space: Title at (x: 150, y: 70), sequential items in Column 1 (x: 150) starting at y: 180. ANTI-COLLISION RULE: When writing sequential notes in Column 1, increment y by (content_height + 40 pixels) so each item sits below the previous one; NEVER restart at y: 180 on the same slide! When introducing diagrams or concept cards (e.g. draw_diagram, draw_concept_card), prefer position='auto', position='bottom', or position='right' (Column 2: x=980, y=180) to let the layout engine place them cleanly without overlapping text. Boxed answers in Column 1. Always maintain consistent left-margin alignment (x: 150 for Column 1, x: 1000 for Column 2). Never emit both write_text and write_normal_text for the same note. When transitioning from a high-level definition to a comprehensive worked example, either open a fresh slide via new_whiteboard_slide or use Column 2 (position='right') so the slide remains uncluttered. FULL TYPOGRAPHY & FONT SIZE CONTROL: You have unrestricted, complete control over font size across all text modalities on the whiteboard. When creating handwritten text with write_text, you can explicitly set font_size (e.g. 12 to 80px). When creating normal text with write_normal_text, you can set font_size. When writing math with write_math, you can set font_size. Whenever the student asks to enlarge, shrink, or change the font size of any existing text, handwriting, diagram node, or formula on the board (e.g. 'كبر حجم كلمة...', 'صغر الخط', 'change font size from 12 to 60'), you MUST immediately call update_whiteboard_item(target='...', font_size=...). NEVER state or claim that handwriting or any other text cannot be resized or has a fixed font size!\n"
     "5. Mandatory Structured Diagram & Multi-Diagram Policy: Whenever explaining classifications, hierarchies, concept trees, processes, flowcharts, or comparisons, you MUST call draw_diagram exclusively. Absolutely NEVER attempt to manually construct trees or branching arrows using draw_shape or write_text. The whiteboard engine features full multi-diagram auto-layout, mid-diagram turns, and compound branching:\n"
     "   * Multiple Diagrams on Same Slide: You CAN freely draw multiple diagrams on the same slide! NEVER tell the student you cannot control coordinates. Use position='right', position='left', position='bottom', or position='auto' (or explicit x, y coordinates). The engine automatically partitions canvas space so diagrams never overlap.\n"
-    "   * Changing Flowchart Direction Midway: You CAN change flowchart direction mid-diagram! To turn directions, simply specify flow='right' or flow='down' on the individual DiagramNode. The engine routes 90-degree orthogonal elbow connectors.\n"
+    "   * All Four Diagram Directions ('TB', 'BT', 'LR', 'RL'): You CAN draw trees and flowcharts in any direction: Top-to-Bottom ('TB'), Bottom-to-Top ('BT' — root at the bottom, arrows pointing UP to child branches above), Left-to-Right ('LR'), or Right-to-Left ('RL'). And you can flip an existing diagram's direction in place at any time using update_whiteboard_item(target='<Diagram Title>', new_direction='BT').\n"
+    "   * Changing Flowchart Direction Midway: You CAN change flowchart direction mid-diagram! To turn directions, simply specify flow='right', flow='down', flow='left', or flow='up' on the individual DiagramNode. The engine routes 90-degree orthogonal elbow connectors.\n"
     "   * Connecting Different Diagram Types (Flowchart to Tree): You CAN connect a flowchart directly into a concept tree! Either specify children=[DiagramNode(...), ...] on the flowchart step to branch into a concept sub-tree, or call draw_diagram with attach_to_node='<Step Name>' to link the new diagram to the previous one with an aligned connector arrow.\n"
-    "6. Independent Shape & Label Lifecycle: You can draw an empty shape first, and later write text inside it (or vice versa). When asked to put a word in a box or draw a box around text, either use draw_shape(shapeType='rectangle', label='...') directly, or center the rectangle around the text at (x - width/2, y - height/2). When asked to erase the text inside a shape, call erase_content targeting the text name, leaving the container intact. When asked to erase the shape, erase the shape.\n\n"
+    "   * Clean String Arguments Only: In draw_diagram, pass ONLY the clean short string for root (e.g. root='Machine Learning'). Absolutely NEVER stringify Python dictionaries, JSON structures, or nested objects like {'label': ...} into the root or title arguments! Pass child branches into nodes=[DiagramNode(label='Supervised Learning', items=[...]), ...].\n"
+    "   * Atomic Diagram Titling: NEVER emit a floating or disconnected title via write_text or write_normal_text above or before drawing a diagram! Embed the diagram title directly in draw_diagram(title='...', root='...'). The whiteboard engine automatically creates the integrated root box and hierarchy. Splitting a diagram into an orphan write_text title plus a disconnected draw_diagram is strictly prohibited.\n"
+    "6. Independent Shape & Label Lifecycle: You can draw an empty shape first, and later write text inside it (or vice versa). When asked to put a word in a box or draw a box around text, either use draw_shape(shapeType='rectangle', label='...') directly, or center the rectangle around the text at (x - width/2, y - height/2). When asked to erase the text inside a shape, call erase_content targeting the text name, leaving the container intact. When asked to erase the shape, erase the shape.\n"
+    "7. Autonomous Moment-by-Moment Self-Review & Self-Correction Protocol: Every whiteboard tool returns a live `[Self-Audit: ...]` diagnostic of the rendered canvas along with a live vision frame. You MUST continuously monitor this feedback after every single drawing or writing action. If `[Self-Audit]` reports any `WARNING` (such as leftover placeholder text like `'...'` or `'Sub-topic'`, overlapping items, or edge clipping), or if you notice any visual defect on the canvas, immediately and proactively repair it in place using `update_whiteboard_item` (or `erase_content`) without waiting for the student to point it out.\n\n"
     "### IV. MULTIMODAL REAL-TIME VISION & SCREEN SHARING INSTRUCTIONS:\n"
     "1. Continuous Real-time Perception & Slide Media Comprehension: You have live visual perception of the whiteboard and screen stream (including live 1 FPS decoded frames, [PLAYING/PAUSED MM:SS/MM:SS] timestamp badges, and live 16kHz audio from videos placed directly inside slides). In addition, whenever a student places an image or video on a slide and asks what happens in the video, asks about a specific timestamp, or needs exact reading of fine text/diagrams in an image or full video timeline, call `inspect_slide_media` immediately for ground-truth full-resolution / full-timeline comprehension.\n"
     "2. Strict Visual Truthfulness & Anti-Hallucination: Only describe what you ACTUALLY see in the video frames or verified via inspect_whiteboard. If the screen is empty/blank, explicitly state that it is completely empty right now. When the student asks you to inspect, look closely, or check whether an element or sub-box is drawn on screen, you MUST call inspect_whiteboard to verify before answering. NEVER guess, assume, or fabricate unseen boxes, connections, or details based on past tool calls or personal expectations.\n"
@@ -121,6 +153,7 @@ TUTOR_SYSTEM_INSTRUCTIONS = (
     "6. Visual Verification of Output: Do NOT re-answer the question or repeat yourself after tool calls return. When a drawing tool completes, treat the visual action as done and complete your explanation of the current micro-step without repeating what you just said.\n\n"
     "### V. WRITING STYLE FLEXIBILITY\n"
     "The user has a UI toggle for their preferred writing style (Handwriting, Normal Text, or Mixed). You MUST adapt seamlessly.\n"
+    "FULL MULTI-MODAL FONT SIZE RESIZING SUPPORT: Both handwriting (write_text) and normal text (write_normal_text) fully support custom font sizes and dynamic resizing at any time via update_whiteboard_item(target='...', font_size=...). Never claim handwriting font size is fixed or cannot be modified.\n"
     "If you attempt to use a text tool (like `write_text` or `write_normal_text`) and the tool returns an ERROR stating that the user has changed the mode, DO NOT apologize or mention the error to the user. You MUST simply retry writing the content using the alternative tool specified in the error message."
 )
 
@@ -238,9 +271,9 @@ def build_thinking_config(model_str: str | None, level_str: str | None = "high")
     target_lvl = lvl_map.get(lvl, genai_types.ThinkingLevel.HIGH)
 
     if "extended-thinking" in m:
-        return genai_types.ThinkingConfig(thinking_level=target_lvl)
+        return genai_types.ThinkingConfig(thinking_level=target_lvl, include_thoughts=False)
     if "3.1" in m:
-        return genai_types.ThinkingConfig(thinking_level=target_lvl)
+        return genai_types.ThinkingConfig(thinking_level=target_lvl, include_thoughts=False)
     # Standard gemini-3.8-live does not accept thinking_level
     return NOT_GIVEN
 
@@ -371,27 +404,42 @@ def build_style_status_block(
         "use expressive handwriting (`write_text`) for titles, subtitles, emphasis labels, margin callouts, and key takeaway remarks, "
         "and printed text (`write_normal_text`) for structured bullet points, definitions, and detailed step notes, "
         "or combine them organically as a natural teacher on a physical whiteboard without rigid boundaries.\n"
-        "5. Simultaneous Pedagogical Action & Speech Protocol (In-Flight Whiteboard Delivery): "
-        "A master teacher writes and draws on the board *at the exact same moment* they speak the explanation. "
-        "Whenever explaining a concept, formula, step, or diagram, emit the whiteboard tool call (`write_math`, `write_normal_text`, `write_text`, `draw_diagram`, `draw_graph`, `draw_3d_graph`, `draw_venn_diagram`, `draw_shape`) "
-        "IMMEDIATELY at the start of your turn concurrently with your spoken explanation — NEVER speak an entire monologue first and draw afterwards, and NEVER promise to draw later. "
-        "ZERO VERBAL META-ANNOUNCEMENTS & PROMISES: Speak directly about the academic subject itself. "
-        "NEVER utter conversational filler promises or announcements about writing (e.g. NEVER say 'وهكتبهالك دلوقتي على السبورة', 'دعني أكتب ذلك', 'خليني أرسم دايجرام', 'I will write this down for you'). Simply execute the tool directly. "
-        "POST-TOOL SILENCE (ZERO RETROACTIVE NARRATION): When the tool execution confirmation returns, continue your pedagogical explanation or comprehension check smoothly. "
-        "NEVER retroactively state that you wrote or drew it (e.g. NEVER say 'وأهو كتبتهالك على السبورة عشان تشوفها' or 'I have written it above')."
+        "5. Simultaneous Pedagogical Action & Speech Protocol (Continuous Concurrent Teaching): "
+        "A master teacher explains by voice continuously *while* writing or drawing on the board at the exact same moment. "
+        "From the very first token of your response, speak your pedagogical explanation, conceptual reasoning, and definitions smoothly and continuously. "
+        "Concurrently with your spoken explanation, emit the appropriate visual whiteboard tool call (`write_math`, `write_normal_text`, `write_text`, `draw_diagram`, `draw_graph`, `draw_3d_graph`, `draw_venn_diagram`, `draw_shape`) as an in-flight companion action. "
+        "NEVER remain silent waiting for the board to finish. "
+        "NEVER speak an entire monologue first and draw afterwards, and NEVER delay the visual tool. "
+        "ZERO VERBAL META-ANNOUNCEMENTS: Speak directly about the academic subject itself without filler promises (NEVER say 'وهكتبهالك دلوقتي على السبورة', 'دعني أكتب ذلك', 'خليني أرسم دايجرام', 'I will write this down for you'). "
+        "CONTINUOUS SINGLE EXPLANATION: Deliver strictly ONE continuous, natural explanation. Do NOT restart, re-explain, or repeat your words when the whiteboard tool renders. Never narrate what you just wrote (NEVER say 'وأهو كتبتهالك على السبورة')."
     )
 
     if "3.8" in mn:
         base_block += (
             "\n6. Asynchronous Non-Blocking Tool Execution Protocol (Gemini 3.8 Live): "
             "All whiteboard and inspection tools execute asynchronously (`NON_BLOCKING`) in parallel with your speech. "
-            "When the asynchronous tool response arrives confirming completion, continue your active micro-step seamlessly without restarting or repeating what you already said. CRITICAL ANTI-REPETITION MANDATE: NEVER repeat sentences, explanations, conversational filler, or apologies ('خليني أرسمهالك', 'ولا يهمك', 'هل الرسمة وضحت أكتر؟') that you already spoken earlier in this turn. Deliver strictly the next concise statement or single comprehension question once without repeating."
+            "When the asynchronous tool response arrives confirming completion, continue your active micro-step seamlessly without restarting or repeating what you already said. CRITICAL SINGLE-RESPONSE AND ANTI-REPETITION MANDATE: Deliver strictly ONE single, direct, well-structured explanation and stop immediately. NEVER generate multiple alternative drafts, variations, or restatements in the same turn. Do NOT loop or rephrase what you just explained with different wording. NEVER voice raw code, python string formatting (such as f'...' or quotes), or reasoning scratchpads into your speech. Deliver strictly the next concise statement or single comprehension question once without repeating."
         )
     if "extended-thinking" in mn:
         base_block += (
             "\n7. EXTENDED-THINKING EXECUTION LOCK (gemini-3.8-live-extended-thinking): "
-            "In extended-thinking mode, NEVER end a turn after saying a conversational filler (such as 'تعال نكتب ده على البوردة' or 'Let us write this down') without emitting the actual whiteboard tool call (`write_math`, `write_normal_text`, `write_text`, `draw_diagram`, `draw_graph`, `draw_3d_graph`, `draw_venn_diagram`, or `draw_shape`) in the exact same turn."
+            "In extended-thinking mode, NEVER end a turn after saying a conversational filler (such as 'تعال نكتب ده على البوردة' or 'Let us write this down') without emitting the actual whiteboard tool call (`write_math`, `write_normal_text`, `write_text`, `draw_diagram`, `draw_graph`, `draw_3d_graph`, `draw_venn_diagram`, or `draw_shape`) in the exact same turn. "
+            "CRITICAL IMMEDIATE TOOL DISPATCH: When the student asks to draw, write, or calculate on the whiteboard, emit the corresponding tool call frame immediately in your primary response payload. Do not defer tool execution to disconnected background turns."
         )
+    base_block += (
+        "\n8. DISCARD INTERRUPTED GENERATIONS MANDATE: "
+        "Whenever the student speaks while you are talking, you are immediately interrupted. "
+        "You MUST immediately and permanently drop the interrupted thought, unfinished sentence, and any pending apology. "
+        "In your next turn, address strictly and exclusively the student's newest statement without attempting to resume, finish, or restate the interrupted sentence. "
+        "NEVER append past apologies or past unfinished points to a subsequent response."
+    )
+    base_block += (
+        "\n9. STRICT WHITEBOARD GROUNDING & TOPIC CONTINUITY MANDATE: "
+        "Whenever the student says 'اشرحلي' (Explain to me), 'اللي قدامك' (what is in front of you), 'اللي تشوفه' (whatever you see fit), or resumes an ongoing session: "
+        "a) ALWAYS inspect the active whiteboard slide, embedded videos, and diagrams FIRST. If there is a video or diagram on the board (e.g. Discord in Rust / Project Phoenix), your explanation MUST focus strictly and exclusively on that existing content! "
+        "b) NEVER invent, hallucinate, or switch to unrelated academic topics (such as Calculus, Differentiation, or unrelated math) when a topic, diagram, or video is already present on the whiteboard. "
+        "c) If and ONLY if the whiteboard is completely blank and has no ongoing session history, ask the student warmly what topic or subject they would like to explore, or suggest they share a video, image, or problem — never impose a random specialized topic without the student's consent."
+    )
 
     if learner_name and str(learner_name).strip():
         clean_name = str(learner_name).strip()
@@ -408,6 +456,18 @@ def build_style_status_block(
         f"- Your teacher identity name is '{active_tutor_name}'.\n"
         f"- When introducing yourself, greeting the student, or when asked who you are, identify yourself naturally as '{active_tutor_name}'.\n"
     )
+
+    try:
+        exec_cfg = get_intermediate_model_config()
+        if exec_cfg.get("enabled"):
+            base_block += (
+                f"\n\n### INTERMEDIATE EXECUTIVE MODEL DELEGATION (ACTIVE — {exec_cfg.get('providerId')} / {exec_cfg.get('modelId')}):\n"
+                f"- An executive intermediate model ({exec_cfg.get('modelId')}) is active for whiteboard planning and execution.\n"
+                f"- When the student asks to draw a diagram, build a concept hierarchy, formulate multi-line math, or modify an existing diagram/text in-place, prefer calling `delegate_to_executive_model(instruction='...')`.\n"
+                f"- While the executive model plans and renders the board in parallel, you remain 100% focused on smooth, low-latency, empathetic voice teaching without spatial calculation lag!"
+            )
+    except Exception:
+        pass
 
     base_block += "\n\n" + build_language_instruction_block(language_config)
     return base_block
@@ -516,16 +576,34 @@ class UserTurnTranscriptAccumulator:
 
 
 class DiagramNode(BaseModel):
-    label: str = Field(description="Title or label of this category, branch, or step")
-    items: list[str] = Field(default=[], description="Bullet points, examples, or sub-details under this node")
+    label: str = Field(
+        default="",
+        description="Title or label of this category, branch, or step (use '' or '...' for an empty placeholder box)"
+    )
+    text: typing.Optional[str] = Field(
+        default=None,
+        description="Alternative alias for label"
+    )
+    items: list[str] = Field(
+        default=[],
+        description="Plain bullet text points listed beneath this box (NOT connected child boxes)"
+    )
     flow: typing.Optional[typing.Literal["auto", "down", "right", "left", "up"]] = Field(
         default="auto",
         description="Direction flow to next node in flowcharts ('auto', 'down', 'right', 'left', 'up')"
     )
     children: typing.Optional[list[dict]] = Field(
         default=None,
-        description="Optional child branch nodes for compound tree branching"
+        description="Connected child branch boxes (each dict has 'label', optional 'items', optional 'children') rendered as rectangle boxes with arrows from this node"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_label(cls, data: typing.Any) -> typing.Any:
+        if isinstance(data, dict):
+            if not data.get("label") and (data.get("text") or data.get("name")):
+                data["label"] = str(data.get("text") or data.get("name"))
+        return data
 
 
 class TutorAgent(Agent):
@@ -576,12 +654,125 @@ class TutorAgent(Agent):
         self._media_upload_tasks: dict[str, asyncio.Task] = {}
         self._seen_slide_media_ids: set[str] = set()
         self._realtime_image_push_cb: typing.Optional[typing.Callable[[bytes, str], None]] = None
+        self._board_sync_event = asyncio.Event()
+        self.session_context_vault: dict = {}
+        self.session_summary: dict = {}
+        self.internet_access_enabled: bool = True
+        self.student_mic_enabled: bool = True
+        self.executive_dispatcher = ExecutiveModelDispatcher(self)
+
+    async def _wait_for_board_sync_and_audit(self, action_summary: str) -> str:
+        """Waits briefly for the frontend post-render board_state_sync and appends a live self-audit report."""
+        has_remote_client = False
+        try:
+            rem = getattr(self._room, "remote_participants", None)
+            if rem and len(rem) > 0:
+                has_remote_client = True
+        except Exception:
+            pass
+
+        if has_remote_client:
+            self._board_sync_event.clear()
+            try:
+                await asyncio.wait_for(self._board_sync_event.wait(), timeout=0.38)
+            except Exception:
+                pass
+        else:
+            await asyncio.sleep(0.01)
+
+        feedback = action_summary
+        sl = getattr(self, "spatial_layout", None)
+        if isinstance(sl, dict) and sl:
+            l_occ = "Occupied" if sl.get("leftColumn", {}).get("occupied") else "Empty"
+            r_occ = "Occupied" if sl.get("rightColumn", {}).get("occupied") else "Empty"
+            b_occ = "Occupied" if sl.get("bottomZone", {}).get("occupied") else "Empty"
+            feedback += f" [Board Layout: Left={l_occ}, Right={r_occ}, Bottom={b_occ}]"
+            audit = sl.get("boardAudit")
+            if isinstance(audit, dict):
+                status = audit.get("status", "CLEAN")
+                anomalies = audit.get("anomalies") or []
+                if status == "WARNING" and anomalies:
+                    feedback += (
+                        f" [Self-Audit WARNING: {'; '.join(str(a) for a in anomalies[:3])} "
+                        "-> Proactively fix any placeholder or overlap in place using update_whiteboard_item!]"
+                    )
+                else:
+                    feedback += f" [Self-Audit: CLEAN ({audit.get('elementCount', 0)} elements verified)]"
+            if sl.get("isSlideSaturated"):
+                feedback += " [NOTICE: Current slide is full! Call new_whiteboard_slide for your next topic.]"
+        return feedback
 
     def reset_session_context(self, reason: str = ""):
         """Safely resets board state and session context on agent."""
         self.board_state = {}
         self._seen_slide_media_ids.clear()
         print(f">>> [AGENT] reset_session_context called (reason: '{reason}')")
+
+    async def _on_gemini_live_reconnected(self, rt_session):
+        """
+        Automatically executed whenever Gemini Live acquires a new WebSocket connection
+        (e.g. after the 9-minute Google GoAway recycle or background network reconnect).
+        Pushes the current whiteboard state briefing and forces a vision frame push
+        so Gemini Live has continuous 100% awareness of the ongoing lesson without hallucinating.
+        """
+        try:
+            await asyncio.sleep(0.4)  # Allow WebSocket connection to fully stabilize
+            cur_slide = (self.board_state or {}).get("currentSlide", {})
+            vault = self.session_context_vault or {}
+            title = vault.get("sessionTitle") or (self.board_state or {}).get("sessionTitle") or ""
+
+            # Check if there is substantive content on the board or an active lesson
+            media_items = cur_slide.get("mediaItems", [])
+            spatial = getattr(self, "spatial_layout", None) or cur_slide.get("spatialLayout", {})
+            layout_summary = spatial.get("layoutSummary", "")
+            math_eqs = cur_slide.get("mathEquations", [])
+            has_content = bool(
+                media_items
+                or layout_summary
+                or math_eqs
+                or cur_slide.get("geometricShapes")
+                or (title and not title.lower().startswith("untitled"))
+            )
+
+            if has_content and hasattr(rt_session, "_send_client_event"):
+                from google.genai import types as genai_types
+
+                briefing_lines = [
+                    "[SYSTEM / RECONNECTION WHITEBOARD GROUNDING]:",
+                    f"You have reconnected to the ongoing tutoring session titled '{title or 'Interactive Whiteboard'}'.",
+                    f"Current active slide is Slide {cur_slide.get('pageNumber', 1)}: '{cur_slide.get('title', '')}'.",
+                ]
+                if media_items:
+                    m_names = [
+                        m.get("fileName") or m.get("title") or m.get("url")
+                        for m in media_items
+                        if m.get("fileName") or m.get("title") or m.get("url")
+                    ]
+                    if m_names:
+                        briefing_lines.append(f"Media on board: {', '.join(m_names)}")
+                if layout_summary:
+                    briefing_lines.append(f"Diagrams on board: {layout_summary}")
+                if math_eqs:
+                    briefing_lines.append(f"Math on board: {', '.join(math_eqs[:4])}")
+                briefing_lines.append(
+                    "GROUNDING MANDATE: Always focus on what is currently displayed on this whiteboard. Never introduce unrelated subjects (such as calculus/differentiation) unless explicitly requested by the student."
+                )
+
+                event = genai_types.LiveClientContent(
+                    turns=[
+                        genai_types.Content(
+                            role="user",
+                            parts=[genai_types.Part.from_text(text="\n".join(briefing_lines))],
+                        )
+                    ],
+                    turn_complete=False,
+                )
+                rt_session._send_client_event(event)
+                print(
+                    f">>> [AGENT] Successfully injected post-reconnect grounding briefing to Gemini Live: '{title}' (Slide {cur_slide.get('pageNumber', 1)})"
+                )
+        except Exception as e:
+            print(f">>> [AGENT] Error in _on_gemini_live_reconnected: {e}")
 
     @staticmethod
     def _fmt_sec(sec: float | int | None) -> str:
@@ -693,6 +884,12 @@ class TutorAgent(Agent):
         """Updates the synchronized whiteboard state received from the client."""
         self.board_state = state
         cur_slide = state.get("currentSlide", {})
+        self.spatial_layout = cur_slide.get("spatialLayout", {})
+        if hasattr(self, "_board_sync_event"):
+            try:
+                self._board_sync_event.set()
+            except Exception:
+                pass
         title = cur_slide.get("title", "Untitled")
         eqs = cur_slide.get("mathEquations", [])
         g2 = cur_slide.get("graphs2D", [])
@@ -701,10 +898,44 @@ class TutorAgent(Agent):
         media_items = cur_slide.get("mediaItems", [])
         if media_items:
             self._schedule_slide_media_indexing(media_items)
+        summary = self.spatial_layout.get("layoutSummary") if self.spatial_layout else ""
+        board_sig = (
+            cur_slide.get("pageNumber", 1),
+            title,
+            len(eqs),
+            len(g2),
+            len(g3),
+            len(shapes),
+            len(media_items),
+            summary,
+        )
+        if getattr(self, "_last_logged_board_sig", None) == board_sig:
+            return
+        self._last_logged_board_sig = board_sig
         print(
             f">>> [AGENT] Synced Board State: Slide {cur_slide.get('pageNumber', 1)} ('{title}'), "
             f"{len(eqs)} equations, {len(g2)} 2D graphs, {len(g3)} 3D graphs, {len(shapes)} shapes, {len(media_items)} media items"
         )
+        if self.spatial_layout:
+            l_occ = self.spatial_layout.get("leftColumn", {}).get("occupied")
+            r_occ = self.spatial_layout.get("rightColumn", {}).get("occupied")
+            b_occ = self.spatial_layout.get("bottomZone", {}).get("occupied")
+            sat = self.spatial_layout.get("isSlideSaturated")
+            print(f">>> [AGENT] Synced Spatial Layout: Left={l_occ}, Right={r_occ}, Bottom={b_occ}, Saturated={sat}")
+            if summary:
+                print(f">>> [AGENT] Synced Board Slots: {summary}")
+
+    @llm.function_tool(description="Delegate a complex whiteboard construction, structured diagram, or in-place edit to the Executive Intermediate Model (e.g. Nemotron, DeepSeek-R1, Qwen-Coder). MANDATORY: Invoke this tool when the intermediate model is enabled, or when asked to construct multi-branch concept hierarchies, math, or surgical updates.")
+    async def delegate_to_executive_model(self, instruction: str) -> str:
+        """
+        Delegates the spatial whiteboard task to the intermediate model.
+        Returns the execution report.
+        """
+        if not getattr(self, "executive_dispatcher", None) or not self.executive_dispatcher.is_enabled():
+            return "Intermediate Executive Model is currently disabled. Please use native whiteboard tools directly (draw_diagram, write_math, write_normal_text, update_whiteboard_item)."
+        
+        success, report = await self.executive_dispatcher.execute_instruction(instruction)
+        return report
 
     @llm.function_tool(description="Inspect what is currently written or drawn on the digital whiteboard (equations, 2D/3D graphs, shapes, diagrams, images, videos with playback timestamps, notes, steps, or all slides in the deck). MANDATORY: Call this tool whenever the student asks you to look at the board, check what's on screen, verify whether a diagram/boxes/media are rendered, continue from existing work, or inspect slide content. NEVER fabricate or assume elements exist without calling this tool.")
     async def inspect_whiteboard(self, scope: str = "current_slide"):
@@ -815,6 +1046,36 @@ class TutorAgent(Agent):
             lines.append("#### 3D WebGL Mathematical Figures on Board:")
             for g3 in graphs3d:
                 lines.append(f"- 3D Plot: '{g3.get('title')}' ({g3.get('plotType')}) -> Equation: `{g3.get('equationZ')}`")
+
+        spatial = current_slide.get("spatialLayout")
+        if spatial:
+            lines.append("#### Whiteboard Spatial Layout & Available Free Space:")
+            summary = spatial.get("layoutSummary")
+            if summary:
+                lines.append(f"- **Summary:** {summary}")
+            avail_slots = spatial.get("availableSlots", [])
+            if avail_slots:
+                open_slots = [s.get("description", s.get("name")) for s in avail_slots if s.get("isAvailable")]
+                if open_slots:
+                    lines.append(f"- **Available Slots:** {', '.join(open_slots)}")
+                else:
+                    lines.append("- **Available Slots:** NONE (Slide is saturated!)")
+            left = spatial.get("leftColumn", {})
+            right = spatial.get("rightColumn", {})
+            bottom = spatial.get("bottomZone", {})
+            l_stat = f"Occupied by {', '.join(left.get('summary', []))}" if left.get("occupied") else f"FREE ({left.get('freeHeight', 840)}px available)"
+            r_stat = f"Occupied by {', '.join(right.get('summary', []))}" if right.get("occupied") else f"FREE ({right.get('freeHeight', 840)}px available)"
+            b_stat = f"Occupied by {', '.join(bottom.get('summary', []))}" if bottom.get("occupied") else f"FREE ({bottom.get('freeHeight', 840)}px available)"
+            lines.append(f"- Left Column (x: 140..940): {l_stat}")
+            lines.append(f"- Right Column (x: 980..1780): {r_stat}")
+            lines.append(f"- Bottom Zone (y: 540..980): {b_stat}")
+            audit = spatial.get("boardAudit")
+            if isinstance(audit, dict):
+                a_status = audit.get("status", "CLEAN")
+                a_list = audit.get("anomalies") or []
+                lines.append(f"- **Self-Audit Status:** {a_status}" + (f" ({'; '.join(str(x) for x in a_list)})" if a_list else ""))
+            if spatial.get("isSlideSaturated"):
+                lines.append("- **STATUS: Current slide is VISUALLY FULL. Call new_whiteboard_slide for next major section.**")
 
         if total_slides > 1:
             lines.append(f"\n*(Note: There are {total_slides} slides in total in this session. Call inspect_whiteboard('all_slides') to inspect other slides).*")
@@ -1032,14 +1293,373 @@ class TutorAgent(Agent):
         await asyncio.sleep(0.01)
         return "Opened a new whiteboard slide."
 
-    @llm.function_tool(description="Write mathematical formulas, equations, symbolic identities, calculus integrals, fractions, exponents, or symbols on the whiteboard using standard LaTeX syntax. MANDATORY: Invoke this tool autonomously and simultaneously whenever introducing, explaining, or referencing any mathematical formula, equation, or symbolic expression without asking the student for permission. Use \\boxed{...} to box final answers.")
+    @llm.function_tool(
+        description="Navigate or flip the whiteboard to an existing slide in the deck (e.g. going back to previous slide, jumping to slide 1 or 2 to review an earlier topic, or moving forward). Pass slide_number (1-based integer, e.g. 1 for Slide 1) or target ('prev', 'next', or the slide title substring)."
+    )
+    async def switch_whiteboard_slide(
+        self,
+        slide_number: typing.Optional[int] = None,
+        target: str = "",
+    ) -> str:
+        """
+        Switches the active whiteboard presentation slide to a specific or relative slide.
+        slide_number: 1-based slide number (e.g. 1, 2, 3).
+        target: 'prev' or 'previous' to go back one slide, 'next' to advance, or title substring.
+        """
+        payload = {
+            "type": "switch_slide",
+            "payload": {
+                "slideNumber": slide_number,
+                "target": target,
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        dest_str = f"Slide {slide_number}" if slide_number is not None else f"'{target}'"
+        print(f">>> [AGENT] Dispatched switch_slide command to frontend: {dest_str}")
+        await asyncio.sleep(0.01)
+        return f"Switched whiteboard to {dest_str}."
+
+    @llm.function_tool(
+        description="Search and recall historical explanations, formulas, past student questions, or notes from earlier in this ongoing multi-day/multi-week session or across previous slides. Use this when the student refers to something discussed earlier in the lesson or session that is not in the immediate conversation window."
+    )
+    async def recall_session_memory(
+        self,
+        query: str,
+    ) -> str:
+        """
+        Recalls historical notes, concepts, student Q&As, or slide content from the session vault.
+        query: search terms or concept to look up (e.g. 'learning rate', 'slide 1 notes', 'student misconception').
+        """
+        vault = getattr(self, "session_context_vault", None)
+        if not vault:
+            return "No extended session history vault loaded for this session."
+        results = []
+        q_lower = query.lower().strip()
+        slides = vault.get("allSlides", [])
+        for s in slides:
+            title = str(s.get("title", ""))
+            summary = str(s.get("summary", ""))
+            p_num = str(s.get("pageNumber", ""))
+            if q_lower in title.lower() or q_lower in summary.lower() or f"slide {p_num}" in q_lower:
+                results.append(f"[Slide {p_num}: {title}]\n{summary}")
+        dialogue = vault.get("sessionHistoryVault", [])
+        for turn in dialogue:
+            sender = str(turn.get("sender") or turn.get("role") or "User")
+            txt = str(turn.get("text", ""))
+            if any(term in txt.lower() for term in q_lower.split() if len(term) > 2):
+                results.append(f"[{sender}]: {txt}")
+        if not results:
+            overview = str(vault.get("sessionOverview", ""))
+            return f"No exact match for '{query}'. Session overview:\n{overview}" if overview else f"No specific mentions of '{query}' found in historical memory."
+        return "Recall Results from Session Memory:\n" + "\n---\n".join(results[:5])
+
+    @llm.function_tool(
+        description="Search the web for up-to-date facts, current information, historical references, or technical documentation. Returns top search results with titles, snippets, and source URLs."
+    )
+    async def search_the_web(
+        self,
+        query: str,
+    ) -> str:
+        """
+        Searches the live internet for factual information or reference material.
+        query: search terms or question to look up online.
+        """
+        if not getattr(self, "internet_access_enabled", True):
+            return "Internet access is currently disabled by the student in the top toolbar (🌐 Web: OFF). Let the student know they can enable it via the Web button to search online."
+
+        results = await asyncio.to_thread(internet_service.search_web_text, query, 4)
+        if not results:
+            return f"No relevant web search results found for '{query}'."
+
+        formatted = [f"Web Search Results for '{query}':"]
+        for idx, r in enumerate(results, 1):
+            formatted.append(f"{idx}. [{r.get('title')}] {r.get('snippet')} (Source: {r.get('url')})")
+        return "\n".join(formatted)
+
+    @llm.function_tool(
+        description="Search for a high-quality educational image on the web and place it directly on the active whiteboard slide. MANDATORY when explaining visual objects, animals, organs, scientific processes, geography, or when the student explicitly requests a picture or image."
+    )
+    async def search_and_display_web_image(
+        self,
+        query: str,
+        caption: str = "",
+        position: typing.Literal["auto", "right", "left", "bottom", "custom"] = "auto",
+        x: typing.Optional[float] = None,
+        y: typing.Optional[float] = None,
+    ) -> str:
+        """
+        Searches the internet for an image matching query and displays it cleanly on the whiteboard slide.
+        query: Specific search terms for the desired image (e.g. 'Photosynthesis chloroplast diagram', 'Heart anatomy diagram').
+        caption: Optional label or descriptive title shown in the media header.
+        position: 'auto', 'right' (Column 2), 'left', or 'bottom'.
+        """
+        if not getattr(self, "internet_access_enabled", True):
+            return "Internet access is currently disabled by the student in the top toolbar (🌐 Web: OFF). Let the student know they can enable it to place web images."
+
+        images = await asyncio.to_thread(internet_service.search_web_images, query, 3)
+        if not images:
+            return f"Could not find a suitable web image for '{query}'. Consider refining the search query."
+
+        top_img = images[0]
+        img_url = top_img.get("image_url") or top_img.get("thumbnail")
+        if not img_url:
+            return f"Found image metadata for '{query}', but direct link was unavailable."
+
+        eff_x = float(x) if x is not None else 980.0
+        eff_y = float(y) if y is not None else 180.0
+        eff_w = 560.0
+        eff_h = 360.0
+
+        if position == "bottom":
+            eff_x = 150.0
+            eff_y = 560.0
+        elif position == "left":
+            eff_x = 150.0
+            eff_y = 180.0
+
+        shape_id = f"img-web-{int(time.time()*1000)}"
+        eff_label = caption.strip() or str(top_img.get("title") or query).strip()
+
+        payload = {
+            "type": "shape",
+            "payload": {
+                "kind": "shape",
+                "shapeType": "image",
+                "id": shape_id,
+                "x": eff_x,
+                "y": eff_y,
+                "width": eff_w,
+                "height": eff_h,
+                "options": {
+                    "url": img_url,
+                    "label": eff_label,
+                    "media": {
+                        "url": img_url,
+                        "fileName": eff_label,
+                        "mimeType": "image/jpeg",
+                        "mediaId": shape_id,
+                    },
+                },
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        print(f">>> [AGENT] Placed web image on whiteboard: '{eff_label}' ({img_url})")
+        await asyncio.sleep(0.01)
+        return f"Successfully displayed web image '{eff_label}' on the whiteboard slide."
+
+    @llm.function_tool(
+        description="Embed and display an interactive YouTube video directly onto the active whiteboard slide. Use whenever the student shares a YouTube link or asks to watch an online educational video."
+    )
+    async def display_youtube_video(
+        self,
+        url: str,
+        title: str = "YouTube Video",
+        position: typing.Literal["auto", "right", "left", "bottom", "custom"] = "auto",
+        x: typing.Optional[float] = None,
+        y: typing.Optional[float] = None,
+    ) -> str:
+        """
+        Places an interactive YouTube video player inside the whiteboard presentation.
+        url: The YouTube URL (e.g. 'https://www.youtube.com/watch?v=...' or 'https://youtu.be/...').
+        title: Descriptive title for the video.
+        """
+        yt_id = internet_service.extract_youtube_video_id(url)
+        if not yt_id:
+            return f"Could not extract a valid YouTube video ID from '{url}'."
+
+        canonical_url = f"https://www.youtube.com/watch?v={yt_id}"
+        eff_x = float(x) if x is not None else 980.0
+        eff_y = float(y) if y is not None else 180.0
+        eff_w = 580.0
+        eff_h = 350.0
+
+        if position == "bottom":
+            eff_x = 150.0
+            eff_y = 560.0
+
+        shape_id = f"yt-{yt_id}-{int(time.time()*1000)}"
+        eff_title = (title or "").strip()
+        if not eff_title or eff_title == "YouTube Video":
+            meta = await asyncio.to_thread(internet_service.get_youtube_video_meta, yt_id)
+            if meta.get("title"):
+                eff_title = meta["title"]
+            else:
+                eff_title = f"YouTube Video ({yt_id})"
+
+        payload = {
+            "type": "shape",
+            "payload": {
+                "kind": "shape",
+                "shapeType": "video",
+                "id": shape_id,
+                "x": eff_x,
+                "y": eff_y,
+                "width": eff_w,
+                "height": eff_h,
+                "options": {
+                    "url": canonical_url,
+                    "label": eff_title,
+                    "media": {
+                        "url": canonical_url,
+                        "fileName": eff_title,
+                        "mimeType": "video/youtube",
+                        "mediaId": shape_id,
+                    },
+                },
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        print(f">>> [AGENT] Embedded YouTube video on whiteboard: '{eff_title}' ({canonical_url})")
+        await asyncio.sleep(0.01)
+        return f"Successfully embedded YouTube video '{eff_title}' onto the whiteboard slide."
+
+    @llm.function_tool(
+        description=(
+            "Control video playback, volume, speed, subtitles, audio dubbing, dimensions, or fullscreen "
+            "for any video on the active whiteboard slide (supporting BOTH online YouTube videos and local uploaded videos). "
+            "Action options: 'play', 'pause', 'toggle_play', 'volume_up', 'volume_down', 'set_volume', 'mute', 'unmute', "
+            "'set_speed', 'seek_relative', 'seek_to', 'enable_subtitles', 'disable_subtitles', "
+            "'set_subtitle_language', 'set_audio_language', 'set_quality', 'maximize', 'minimize', 'resize', 'fullscreen'. "
+            "Pass parameters: video_id (optional, defaults to active/latest video), volume (0-100), speed (0.25 to 2.0), "
+            "time_sec (seconds to seek or delta), language ('ar', 'en', 'es', 'de', etc.), quality ('hd1080', 'hd720', 'auto'), "
+            "width, height."
+        )
+    )
+    async def control_video(
+        self,
+        action: typing.Literal[
+            "play",
+            "pause",
+            "toggle_play",
+            "volume_up",
+            "volume_down",
+            "set_volume",
+            "mute",
+            "unmute",
+            "set_speed",
+            "seek_relative",
+            "seek_to",
+            "enable_subtitles",
+            "disable_subtitles",
+            "set_subtitle_language",
+            "set_audio_language",
+            "set_quality",
+            "maximize",
+            "minimize",
+            "resize",
+            "fullscreen",
+        ] = "play",
+        video_id: typing.Optional[str] = None,
+        volume: typing.Optional[int] = None,
+        speed: typing.Optional[float] = None,
+        time_sec: typing.Optional[float] = None,
+        language: typing.Optional[str] = None,
+        quality: typing.Optional[str] = None,
+        width: typing.Optional[int] = None,
+        height: typing.Optional[int] = None,
+    ) -> str:
+        """
+        Controls video playback, volume, speed, subtitles, dubbing language, size or fullscreen for videos on the whiteboard.
+        """
+        current_slide = self.board_state.get("currentSlide", {}) if hasattr(self, "board_state") else {}
+        slide_media = current_slide.get("mediaItems", []) if isinstance(current_slide, dict) else []
+        video_items = [m for m in slide_media if str(m.get("mediaType", "")).lower() == "video"]
+
+        target_name = video_id or "active video"
+        if video_items:
+            if video_id:
+                for v in video_items:
+                    if v.get("id") == video_id or v.get("mediaId") == video_id or (v.get("fileName") and video_id.lower() in str(v.get("fileName", "")).lower()):
+                        target_name = v.get("fileName") or v.get("id")
+                        break
+            else:
+                target_name = video_items[-1].get("fileName") or video_items[-1].get("id")
+
+        payload = {
+            "type": "control_video",
+            "payload": {
+                "action": action,
+                "video_id": video_id,
+                "volume": volume,
+                "speed": speed,
+                "time_sec": time_sec,
+                "language": language,
+                "quality": quality,
+                "width": width,
+                "height": height,
+            },
+        }
+
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        print(f">>> [AGENT] Dispatched control_video action '{action}' for '{target_name}'")
+        await asyncio.sleep(0.01)
+
+        action_messages = {
+            "play": f"Started playing '{target_name}'.",
+            "pause": f"Paused '{target_name}'.",
+            "toggle_play": f"Toggled playback for '{target_name}'.",
+            "volume_up": f"Turned volume up for '{target_name}'.",
+            "volume_down": f"Turned volume down for '{target_name}'.",
+            "set_volume": f"Set volume to {volume}% for '{target_name}'.",
+            "mute": f"Muted '{target_name}'.",
+            "unmute": f"Unmuted '{target_name}'.",
+            "set_speed": f"Set playback speed to {speed}x for '{target_name}'.",
+            "seek_to": f"Seeked to {time_sec}s in '{target_name}'.",
+            "seek_relative": f"Seeked {time_sec}s in '{target_name}'.",
+            "enable_subtitles": f"Enabled subtitles ({language or 'default'}) for '{target_name}'.",
+            "disable_subtitles": f"Disabled subtitles for '{target_name}'.",
+            "set_subtitle_language": f"Set subtitle language to '{language}' for '{target_name}'.",
+            "set_audio_language": f"Set audio dubbing language to '{language}' for '{target_name}'.",
+            "set_quality": f"Set quality to '{quality}' for '{target_name}'.",
+            "maximize": f"Maximized video player for '{target_name}'.",
+            "minimize": f"Minimized video player for '{target_name}'.",
+            "resize": f"Resized video player to {width}x{height} for '{target_name}'.",
+            "fullscreen": f"Opened '{target_name}' in fullscreen view.",
+        }
+        return action_messages.get(action, f"Executed video control action '{action}' for '{target_name}'.")
+
+    @llm.function_tool(
+        description="Deeply analyze, summarize, or answer questions about a YouTube video. Retrieves video concepts, spoken transcript, and notable timestamps."
+    )
+    async def analyze_youtube_video(
+        self,
+        url: str,
+        question: str = "Summarize the key concepts, main topics, and notable timestamps in this video.",
+    ) -> str:
+        """
+        Analyzes the full content of a YouTube video using AI video understanding and subtitles.
+        url: YouTube video link.
+        question: Specific question or analysis focus.
+        """
+        if not getattr(self, "internet_access_enabled", True):
+            return "Internet access is currently disabled by the student in the top toolbar (🌐 Web: OFF). Let the student know they can enable it to analyze online videos."
+
+        api_key, _ = resolve_gemini_api_key()
+        analysis = await internet_service.analyze_youtube_video_content(
+            video_url=url,
+            question=question,
+            api_key=api_key or GOOGLE_API_KEY,
+        )
+        return analysis
+
+    @llm.function_tool(description="Write mathematical formulas, equations, symbolic identities, calculus integrals, fractions, exponents, or symbols on the whiteboard using standard LaTeX syntax. Pass attach_to_node='...' or slot='side_notes' to position automatically under a diagram node or in side notes without coordinate guesswork. Use \\boxed{...} to box final answers.")
     async def write_math(
         self,
         latex: str,
-        x: float,
-        y: float,
+        x: float = 140,
+        y: float = 200,
         font_size: int = 30,
         color: str = "#FFFFFF",
+        slot: str = "auto",
+        attach_to_node: str = "",
     ):
         """
         Writes a mathematical formula on the whiteboard using LaTeX (rendered beautifully with KaTeX).
@@ -1048,7 +1668,28 @@ class TutorAgent(Agent):
         x, y: coordinates on whiteboard.
         font_size: font size in pixels (default 30).
         color: color of the formula (default '#FFFFFF').
+        slot: 'auto', 'side_notes', 'side_notes_right', or 'margin'.
+        attach_to_node: Optional name of an existing diagram node to place directly underneath.
         """
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] write_math intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Write mathematical formula using LaTeX: {latex}."
+            if slot and slot != "auto":
+                instruction += f" Slot: {slot}."
+            if attach_to_node:
+                instruction += f" Attach to node: {attach_to_node}."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native write_math")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native write_math")
+
         payload = {
             "type": "shape",
             "payload": {
@@ -1056,7 +1697,13 @@ class TutorAgent(Agent):
                 "shapeType": "math",
                 "x": x,
                 "y": y,
-                "options": {"latex": latex, "fontSize": font_size, "color": color},
+                "options": {
+                    "latex": latex,
+                    "fontSize": font_size,
+                    "color": color,
+                    "slot": slot,
+                    "attachToNode": attach_to_node,
+                },
             },
         }
         await self._room.local_participant.publish_data(
@@ -1399,6 +2046,8 @@ class TutorAgent(Agent):
             json.dumps(payload).encode("utf-8")
         )
         await asyncio.sleep(0.01)
+        return f"Plotted interactive 3D graph '{title}' ({plot_type or 'auto'}) on whiteboard."
+
     @llm.function_tool(
         description="Draw a mathematically exact probability Venn diagram with shaded boolean regions (e.g. P(A and B), P(A or B), P(A only), P(neither), or 3-set Venn diagrams) with labeled probabilities."
     )
@@ -1455,7 +2104,329 @@ class TutorAgent(Agent):
         return f"Plotted probability Venn diagram '{title}' on whiteboard."
 
     @llm.function_tool(
-        description="MANDATORY for drawing structured diagrams, concept trees, flowcharts, hierarchies, pipelines, or comparisons on the whiteboard. Features collision-aware multi-diagram auto-placement, mid-flow direction turning, and compound flowchart-to-tree branching. NEVER use draw_shape for trees or diagrams."
+        description="Deploy an interactive instant quiz directly onto the whiteboard canvas to assess the student's understanding. Supports quiz_type='multiple_choice', 'true_false', 'matching', 'fill_in_the_blank', 'ordering', or 'short_answer'. The student can answer via click/touch, speech/voice, handwriting, or drawing a circle/line on the board. MANDATORY: For multiple_choice, options MUST be a list of objects with 'id' ('opt_1', 'opt_2'), 'label' ('A', 'B'), 'text' (the option sentence), and 'isCorrect' (true on EXACTLY ONE correct option). Specify 'correct_option' (e.g. 'A') as well."
+    )
+    async def create_instant_quiz(
+        self,
+        question: str,
+        quiz_type: typing.Literal["multiple_choice", "true_false", "matching", "fill_in_the_blank", "ordering", "short_answer"] = "multiple_choice",
+        options: typing.Optional[list[dict]] = None,
+        correct_option: typing.Optional[str] = None,
+        correct_answer: typing.Optional[str] = None,
+        pairs: typing.Optional[list[dict]] = None,
+        blank_sentence: str = "",
+        accepted_answers: typing.Optional[list[str]] = None,
+        explanation: str = "",
+        color_theme: str = "cyan",
+        position: str = "auto",
+        x: typing.Optional[float] = None,
+        y: typing.Optional[float] = None,
+        width: float = 540.0,
+        height: float = 380.0,
+    ):
+        """
+        Deploys an interactive instant quiz onto the whiteboard.
+        question: The question or prompt statement to test the student.
+        quiz_type: One of 'multiple_choice', 'true_false', 'matching', 'fill_in_the_blank', 'ordering', 'short_answer'.
+        options: For multiple_choice / true_false / ordering: list of dicts [{'id': 'opt-a', 'label': 'A', 'text': '...', 'isCorrect': True}, ...]
+        correct_option: Optional correct option letter or ID (e.g. 'A').
+        correct_answer: Optional correct answer string.
+        pairs: For matching: list of dicts [{'leftId': 'l1', 'leftText': 'Term A', 'rightId': 'r1', 'rightText': 'Def A'}, ...]
+        blank_sentence: For fill_in_the_blank: sentence with blank or prompt.
+        accepted_answers: For fill_in_the_blank / short_answer: list of valid accepted answers.
+        explanation: Pedagogical explanation displayed after answer is checked.
+        color_theme: Card color theme ('cyan', 'purple', 'amber', 'emerald').
+        position: 'auto' (recommended, places in Column 2 / free slot) or 'custom'.
+        """
+        clean_question = str(question or "").replace("\\n", "\n").strip()
+        quiz_id = f"quiz-{int(time.time() * 1000)}"
+        self.active_quiz_id = quiz_id
+
+        # Determine options and correct answer for true_false
+        if quiz_type == "true_false":
+            target_key = str(correct_answer or correct_option or "").strip().lower()
+            exp_lower = str(explanation or "").strip().lower()
+            is_false = (
+                target_key in ("false", "falsch", "b", "no", "nein", "wrong", "incorrect", "opt_2", "opt-2")
+                or "ist falsch" in exp_lower
+                or "is false" in exp_lower
+                or "die aussage ist falsch" in exp_lower
+                or "the statement is false" in exp_lower
+            )
+            options = [
+                {"id": "true", "label": "A", "text": "True", "isCorrect": not is_false},
+                {"id": "false", "label": "B", "text": "False", "isCorrect": is_false},
+            ]
+
+        # Smart option normalization and correct answer resolution
+        norm_options = []
+        has_correct = False
+        raw_options = list(options or [])
+
+        # Resilient ordering recovery if options were passed as strings or in accepted_answers/question
+        if quiz_type == "ordering" and not raw_options:
+            if accepted_answers:
+                raw_options = [
+                    {"id": f"step_{idx+1}", "label": str(idx+1), "text": str(ans).strip(), "order": idx+1, "isCorrect": True}
+                    for idx, ans in enumerate(accepted_answers) if str(ans).strip()
+                ]
+            elif ":" in clean_question:
+                colon_parts = clean_question.split(":", 1)[1].strip().split(",")
+                candidates = [p.strip().rstrip(".") for p in colon_parts if len(p.strip()) > 3]
+                if len(candidates) >= 2:
+                    raw_options = [
+                        {"id": f"step_{idx+1}", "label": str(idx+1), "text": re.sub(r"^[0-9]+[.\-)]\s*", "", c).strip(), "order": idx+1, "isCorrect": True}
+                        for idx, c in enumerate(candidates)
+                    ]
+
+        for idx, opt in enumerate(raw_options):
+            if isinstance(opt, str):
+                opt = {"id": f"step_{idx+1}", "text": opt, "order": idx + 1, "isCorrect": True}
+            elif not isinstance(opt, dict):
+                continue
+            o_id = str(opt.get("id") or f"opt_{idx+1}")
+            o_label = str(opt.get("label") or "").strip()
+            o_text = str(opt.get("text") or "").strip()
+
+            # If text is empty but label holds the sentence (> 2 chars)
+            if not o_text and len(o_label) > 2:
+                o_text = o_label
+                o_label = chr(65 + idx)
+            elif not o_text:
+                o_text = o_id
+
+            if not o_label:
+                o_label = chr(65 + idx)
+            elif len(o_label) > 2 and len(o_text) > 0:
+                o_label = chr(65 + idx)
+
+            is_corr = bool(opt.get("isCorrect") or opt.get("is_correct") or False)
+            if is_corr:
+                has_correct = True
+
+            item_order = opt.get("order")
+            if item_order is None or not isinstance(item_order, (int, float)):
+                item_order = idx + 1
+
+            norm_options.append({
+                "id": o_id,
+                "label": o_label,
+                "text": o_text,
+                "isCorrect": is_corr,
+                "order": item_order,
+            })
+
+        # Explicit target resolution overrides any defaults
+        target_key = str(correct_option or correct_answer or "").strip().lower()
+        if target_key and norm_options:
+            matched_explicit = False
+            for opt in norm_options:
+                o_id = opt["id"].lower()
+                o_label = opt["label"].lower()
+                o_text = opt["text"].lower()
+                is_match = (
+                    o_id == target_key
+                    or o_label == target_key
+                    or o_text == target_key
+                    or (target_key in ("false", "falsch", "b", "nein") and (o_id in ("false", "b") or o_text in ("false", "falsch")))
+                    or (target_key in ("true", "richtig", "a", "ja") and (o_id in ("true", "a") or o_text in ("true", "richtig")))
+                    or (len(target_key) > 2 and target_key in o_text)
+                )
+                if is_match:
+                    opt["isCorrect"] = True
+                    matched_explicit = True
+                else:
+                    opt["isCorrect"] = False
+            if matched_explicit:
+                has_correct = True
+
+        # Fallback resolution if model omitted isCorrect across all options
+        if norm_options and not has_correct:
+            exp_lower = str(explanation or "").strip().lower()
+            matched = False
+
+            if exp_lower:
+                for opt in norm_options:
+                    if len(opt["text"]) >= 3 and opt["text"].lower() in exp_lower:
+                        opt["isCorrect"] = True
+                        matched = True
+                        break
+
+            if not matched and quiz_type == "multiple_choice" and norm_options:
+                norm_options[0]["isCorrect"] = True
+
+        # Smart pair normalization for matching quizzes
+        norm_pairs = []
+        for idx, p in enumerate(pairs or []):
+            if not isinstance(p, dict):
+                continue
+            l_text = str(
+                p.get("leftText")
+                or p.get("left")
+                or p.get("term")
+                or p.get("concept")
+                or p.get("key")
+                or p.get("left_text")
+                or ""
+            ).strip()
+            r_text = str(
+                p.get("rightText")
+                or p.get("right")
+                or p.get("definition")
+                or p.get("desc")
+                or p.get("value")
+                or p.get("right_text")
+                or ""
+            ).strip()
+            l_id = str(p.get("leftId") or p.get("left_id") or f"left_{idx+1}")
+            r_id = str(p.get("rightId") or p.get("right_id") or f"right_{idx+1}")
+            if l_text or r_text:
+                norm_pairs.append({
+                    "leftId": l_id,
+                    "leftText": l_text,
+                    "rightId": r_id,
+                    "rightText": r_text,
+                })
+
+        if quiz_type == "matching" and width <= 540.0:
+            width = 620.0
+            height = 420.0
+        elif quiz_type in ("short_answer", "ordering") and width <= 540.0:
+            width = 580.0
+            height = 420.0
+
+        # Executive model delegation if enabled
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] create_instant_quiz intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = (
+                f"Deploy interactive instant quiz question='{clean_question}', quiz_type='{quiz_type}', "
+                f"options={norm_options}, correct_option='{correct_option}', correct_answer='{correct_answer}', "
+                f"pairs={norm_pairs}, blank_sentence='{blank_sentence}', accepted_answers={accepted_answers}, explanation='{explanation}'."
+            )
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native create_instant_quiz")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native create_instant_quiz")
+
+        # Smart candidate answers normalization for fill_in_the_blank / short_answer
+        norm_accepted = [str(a).strip() for a in (accepted_answers or []) if str(a).strip()]
+        if correct_answer and str(correct_answer).strip():
+            ca = str(correct_answer).strip()
+            if ca not in norm_accepted:
+                norm_accepted.insert(0, ca)
+            if ca.lower() not in norm_accepted:
+                norm_accepted.append(ca.lower())
+
+        if not norm_accepted and quiz_type in ("fill_in_the_blank", "short_answer"):
+            # Auto-infer candidate from explanation or question/blank
+            if explanation:
+                first_exp = explanation.strip().split()
+                if first_exp:
+                    w1 = first_exp[0].strip(".,!?:;\"'()")
+                    if len(w1) >= 3:
+                        norm_accepted.append(w1)
+                    if len(first_exp) >= 2:
+                        w2 = f"{w1} {first_exp[1].strip('.,!?:;\"\'()')}"
+                        norm_accepted.append(w2)
+            if correct_answer and str(correct_answer).strip():
+                norm_accepted.append(str(correct_answer).strip())
+
+        resolved_correct_answer = correct_answer or (norm_accepted[0] if norm_accepted else None)
+
+        actual_x = x if (x is not None and position == "custom") else 980.0
+        actual_y = y if (y is not None and position == "custom") else 180.0
+
+        payload = {
+            "type": "shape",
+            "payload": {
+                "kind": "shape",
+                "shapeType": "quiz",
+                "x": actual_x,
+                "y": actual_y,
+                "width": width,
+                "height": height,
+                "options": {
+                    "quizId": quiz_id,
+                    "quizType": quiz_type,
+                    "question": clean_question,
+                    "options": norm_options,
+                    "correctOption": correct_option,
+                    "correctAnswer": resolved_correct_answer,
+                    "pairs": norm_pairs,
+                    "blankSentence": blank_sentence,
+                    "acceptedAnswers": norm_accepted,
+                    "explanation": explanation,
+                    "colorTheme": color_theme,
+                    "position": position,
+                },
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        return await self._wait_for_board_sync_and_audit(
+            f"Deployed interactive {quiz_type} quiz '{clean_question}' on whiteboard (ID: {quiz_id})."
+        )
+
+    @llm.function_tool(
+        description="MANDATORY whenever the student answers an active whiteboard quiz verbally, mentions step sequence (even partial e.g. 'First Datensammlung, second Datenvorverarbeitung'), or asks why a step is placed somewhere. You MUST immediately call submit_quiz_answer with the sequence in that same turn without arguing verbally, so the whiteboard card visibly rearranges into their order in real time. For matching quizzes, pass their stated pairings (e.g. 'Supervised -> gelabelte Daten')."
+    )
+    async def submit_quiz_answer(
+        self,
+        answer: str,
+        quiz_id: typing.Optional[str] = None,
+    ):
+        """
+        Submits an answer to an active instant quiz on the whiteboard.
+        answer: The student's answer (option ID 'opt-a', label 'A', 'True', 'False', or text).
+        quiz_id: Optional ID of the active quiz (defaults automatically to active quiz on board).
+        """
+        target_id = quiz_id or getattr(self, "active_quiz_id", "") or "active"
+        payload = {
+            "type": "quiz_answer",
+            "payload": {
+                "quizId": target_id,
+                "answer": answer,
+                "mode": "voice",
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        return f"Submitted answer '{answer}' for quiz '{target_id}' on whiteboard."
+
+    @llm.function_tool(
+        description="Resets an active whiteboard quiz back to its initial active state so the student can try again (e.g. when the student asks to retry or after an incorrect attempt)."
+    )
+    async def retry_quiz(
+        self,
+        quiz_id: typing.Optional[str] = None,
+    ):
+        """
+        Resets the whiteboard quiz to active state for a retry.
+        quiz_id: Optional ID of the active quiz (defaults automatically to active quiz on board).
+        """
+        target_id = quiz_id or getattr(self, "active_quiz_id", "") or "active"
+        payload = {
+            "type": "quiz_retry",
+            "payload": {
+                "quizId": target_id,
+            },
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        return f"Reset quiz '{target_id}' on whiteboard for retry."
+
+    @llm.function_tool(
+        description="MANDATORY for drawing structured diagrams, concept trees, flowcharts, hierarchies, pipelines, or comparisons on the whiteboard. Supports all 4 directions: 'TB' (Top-to-Bottom), 'BT' (Bottom-to-Top / upward hierarchy from bottom root to top branches), 'LR' (Left-to-Right), and 'RL' (Right-to-Left). Features collision-aware multi-diagram auto-placement, mid-flow direction turning, and compound flowchart-to-tree branching. NEVER use draw_shape for trees or diagrams."
     )
     async def draw_diagram(
         self,
@@ -1463,7 +2434,7 @@ class TutorAgent(Agent):
         diagram_type: typing.Literal["tree", "flowchart", "process", "comparison", "hybrid"] = "tree",
         root: str = "",
         nodes: list[DiagramNode] = [],
-        direction: typing.Literal["TB", "LR"] = "TB",
+        direction: typing.Literal["TB", "BT", "LR", "RL"] = "TB",
         position: typing.Literal["auto", "left", "right", "top", "bottom", "center", "custom"] = "auto",
         attach_to_node: str = "",
         x: typing.Optional[float] = None,
@@ -1475,22 +2446,28 @@ class TutorAgent(Agent):
         Draws a structured diagram or flowchart with automatic layout, auto-sized boxes, and aligned connectors.
         title: Title of the diagram (e.g. 'Machine Learning Types', 'SDLC Process').
         diagram_type:
-          - 'tree': Hierarchical concept tree branching from a root box down to child categories with bullet items.
+          - 'tree': Hierarchical concept tree branching from a root box to child categories with bullet items.
           - 'flowchart' or 'process': Sequential step-by-step pipeline (Step 1 -> Step 2 -> Step 3) with arrows.
           - 'comparison': Side-by-side comparison cards (e.g. Kinetic vs Potential Energy, Supervised vs Unsupervised).
           - 'hybrid': Compound flowchart pipeline where steps can turn directions or branch into trees.
         root: Name of the central/root topic box (for 'tree' diagrams, e.g. 'Machine Learning').
         nodes: List of category/step nodes. In flowcharts, each node can set flow='down', flow='right', flow='left', or flow='up' (for upward loops or progressions), or children=[...] to branch into a sub-tree.
-        direction: 'TB' (Top-to-Bottom, recommended default) or 'LR' (Left-to-Right).
+        direction: 'TB' (Top-to-Bottom, default), 'BT' (Bottom-to-Top / upward from bottom root to top children), 'LR' (Left-to-Right), or 'RL' (Right-to-Left).
         position: Canvas slot placement ('auto', 'left', 'right', 'top', 'bottom', 'center').
           - When drawing a SECOND diagram on the same slide, use 'auto', 'right', 'left', or 'bottom' to place it without overlapping existing diagrams.
         attach_to_node: Optional name of an existing node on the whiteboard to link to with a bridging connector arrow (e.g. 'Step 3' or 'Deployment').
         x, y, width, height: Optional explicit custom position coordinates and dimensions.
         """
-        # Sanitize direction and diagram_type to prevent any schema degradation
+        # Sanitize direction and diagram_type to support TB, BT, LR, RL cleanly
         clean_dir = "TB"
-        if isinstance(direction, str) and ("LR" in direction.upper() or "HORIZONTAL" in direction.upper()):
-            clean_dir = "LR"
+        if isinstance(direction, str):
+            d_up = direction.strip().upper()
+            if d_up in ("BT", "BU", "UP", "BOTTOM-UP", "BOTTOM_TO_TOP", "BOTTOM-TO-TOP") or "BOTTOM" in d_up or d_up == "UP":
+                clean_dir = "BT"
+            elif d_up in ("RL", "LEFT", "RIGHT-TO-LEFT", "RIGHT_TO_LEFT"):
+                clean_dir = "RL"
+            elif "LR" in d_up or "HORIZONTAL" in d_up or "RIGHT" in d_up:
+                clean_dir = "LR"
 
         clean_type = "tree"
         if isinstance(diagram_type, str):
@@ -1504,20 +2481,133 @@ class TutorAgent(Agent):
         if "handwritten" in str(title).lower() or "handwriting" in str(title).lower():
             effective_style = "handwriting"
 
+        def _unescape_node_dict(nd: dict) -> dict:
+            out = dict(nd)
+            raw_lbl = out.get("label") or out.get("text") or out.get("name") or ""
+            out["label"] = str(raw_lbl).replace("\\n", "\n").replace("\\t", " ")
+            if isinstance(out.get("items"), list):
+                out["items"] = [str(it).replace("\\n", "\n").replace("\\t", " ") for it in out["items"]]
+            if isinstance(out.get("children"), list):
+                out["children"] = [_unescape_node_dict(c) if isinstance(c, dict) else c for c in out["children"]]
+            return out
+
         # Serialize Pydantic DiagramNode objects or dicts
         clean_nodes = []
         for n in nodes:
             if hasattr(n, "model_dump"):
-                clean_nodes.append(n.model_dump())
+                clean_nodes.append(_unescape_node_dict(n.model_dump()))
             elif hasattr(n, "dict"):
-                clean_nodes.append(n.dict())
+                clean_nodes.append(_unescape_node_dict(n.dict()))
             elif isinstance(n, dict):
-                clean_nodes.append(n)
+                clean_nodes.append(_unescape_node_dict(n))
+
+        clean_title = str(title or "").replace("\\n", "\n").strip()
+
+        def _try_parse_obj(val: typing.Any) -> typing.Optional[dict]:
+            if isinstance(val, dict):
+                return val
+            if not isinstance(val, str):
+                return None
+            s = val.strip()
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    pass
+                try:
+                    import ast
+                    parsed = ast.literal_eval(s)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+            return None
+
+        # Unpack composite/stringified dict or JSON structure if the model passed the tree in root or title
+        parsed_root = _try_parse_obj(root)
+        if parsed_root:
+            clean_root = str(
+                parsed_root.get("label")
+                or parsed_root.get("text")
+                or parsed_root.get("root_text")
+                or parsed_root.get("name")
+                or parsed_root.get("root")
+                or parsed_root.get("title")
+                or clean_title
+                or "Overview"
+            ).replace("\\n", "\n").strip()
+            if not clean_title and clean_root and clean_root != "Overview":
+                clean_title = clean_root
+            if not clean_nodes and "children" in parsed_root and isinstance(parsed_root["children"], list):
+                for c in parsed_root["children"]:
+                    if isinstance(c, dict):
+                        clean_nodes.append(_unescape_node_dict(c))
+        else:
+            clean_root = str(root or clean_title or "Overview").replace("\\n", "\n").strip()
+            if not clean_title and clean_root and clean_root != "Overview":
+                clean_title = clean_root
+
+        parsed_title = _try_parse_obj(title)
+        if parsed_title:
+            if not clean_root or clean_root == str(title).strip() or clean_root == "Overview":
+                clean_root = str(
+                    parsed_title.get("label")
+                    or parsed_title.get("text")
+                    or parsed_title.get("root_text")
+                    or parsed_title.get("name")
+                    or parsed_title.get("root")
+                    or parsed_title.get("title")
+                    or "Overview"
+                ).replace("\\n", "\n").strip()
+            clean_title = str(
+                parsed_title.get("title")
+                or parsed_title.get("root_text")
+                or parsed_title.get("label")
+                or parsed_title.get("text")
+                or parsed_title.get("name")
+                or clean_root
+            ).replace("\\n", "\n").strip()
+            if not clean_nodes and "children" in parsed_title and isinstance(parsed_title["children"], list):
+                for c in parsed_title["children"]:
+                    if isinstance(c, dict):
+                        clean_nodes.append(_unescape_node_dict(c))
+
+        if not clean_nodes and isinstance(nodes, str) and nodes.strip().startswith("["):
+            try:
+                import ast
+                parsed_list = json.loads(nodes.strip()) if '"' in nodes else ast.literal_eval(nodes.strip())
+                if isinstance(parsed_list, list):
+                    for c in parsed_list:
+                        if isinstance(c, dict):
+                            clean_nodes.append(_unescape_node_dict(c))
+            except Exception:
+                pass
+
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] draw_diagram intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Draw a {clean_type} diagram titled '{clean_title}' with root '{clean_root}' and direction '{clean_dir}'."
+            if clean_nodes:
+                instruction += f" Nodes: {json.dumps(clean_nodes)}."
+            if position and position != "auto":
+                instruction += f" Position: {position}."
+            if attach_to_node:
+                instruction += f" Attach to node: {attach_to_node}."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native draw_diagram")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native draw_diagram")
 
         options_dict = {
-            "title": title,
+            "title": clean_title,
             "diagramType": clean_type,
-            "root": root or title,
+            "root": clean_root,
             "nodes": clean_nodes,
             "direction": clean_dir,
             "writingStyle": effective_style,
@@ -1546,8 +2636,9 @@ class TutorAgent(Agent):
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        await asyncio.sleep(0.01)
-        return f"Plotted structured diagram '{title}' on whiteboard."
+        return await self._wait_for_board_sync_and_audit(
+            f"Plotted structured diagram '{clean_title}' on whiteboard (direction='{clean_dir}', position='{position}')."
+        )
 
 
     @llm.function_tool(
@@ -1560,6 +2651,7 @@ class TutorAgent(Agent):
         category: str = "",
         color: str = "#38bdf8",
         position: typing.Literal["auto", "left", "right", "top", "bottom", "custom"] = "auto",
+        attach_to_node: str = "",
         x: typing.Optional[float] = None,
         y: typing.Optional[float] = None,
         width: typing.Optional[float] = 540.0,
@@ -1571,17 +2663,67 @@ class TutorAgent(Agent):
         category: Optional short uppercase category badge (e.g. 'EXAMPLE', 'MACHINE LEARNING', 'DEFINITION').
         color: Hex accent color for the border, badge, and divider (e.g. '#38bdf8' cyan, '#4ECDC4' teal, '#FFAB00' amber, '#C77DFF' purple, '#ef4444' rose).
         position: Canvas slot placement ('auto', 'bottom', 'right', 'left', 'custom'). Recommended default 'auto' (or 'bottom' / 'right') to auto-position cleanly without overlapping existing notes/text.
+        attach_to_node: Optional target node label from an existing diagram or card to anchor/cluster this card directly with that concept.
         x, y, width: Optional coordinates and card width (only when position='custom').
         """
+        clean_title = str(title or "").replace("\\n", "\n").strip()
+        clean_items = [str(it).replace("\\n", "\n").replace("\\t", " ").strip() for it in (items or [])]
+
+        # Smart interception: if the model mistakenly calls draw_concept_card to deploy a challenge/quiz
+        is_pseudo_quiz = (
+            "challenge" in clean_title.lower()
+            or "quiz" in clean_title.lower()
+            or any("antwort:" in it.lower() or "answer:" in it.lower() for it in clean_items)
+        )
+        if is_pseudo_quiz:
+            print(f">>> [AGENT] draw_concept_card pseudo-quiz detected ('{clean_title}') -> auto-rerouting to create_instant_quiz")
+            filtered_items = [it for it in clean_items if not it.lower().startswith("antwort:") and not it.lower().startswith("answer:")]
+            q_type = "ordering" if ("ordering" in clean_title.lower() or "reihenfolge" in clean_title.lower() or "pipeline" in clean_title.lower()) else "multiple_choice"
+            norm_opts = []
+            for idx, it in enumerate(filtered_items):
+                clean_it = re.sub(r"^[A-Za-z0-9]+[.\-)]\s*", "", it).strip()
+                norm_opts.append({"id": f"step_{idx+1}", "label": str(idx+1), "text": clean_it, "order": idx+1, "isCorrect": True})
+            return await self.create_instant_quiz(
+                question=clean_title,
+                quiz_type=q_type,
+                options=norm_opts,
+                position="right"
+            )
+
+        if (
+            hasattr(self, "executive_dispatcher")
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] draw_concept_card intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Draw a concept card titled '{clean_title}' with items: {json.dumps(clean_items)}."
+            if category:
+                instruction += f" Category: '{category}'."
+            if color:
+                instruction += f" Color: '{color}'."
+            if position and position != "auto":
+                instruction += f" Position: '{position}'."
+            if attach_to_node:
+                instruction += f" Attach to node: '{attach_to_node}'."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native draw_concept_card")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native draw_concept_card")
+
         options_dict = {
-            "title": title,
+            "title": clean_title,
             "diagramType": "concept_card",
             "category": category,
-            "items": items,
+            "items": clean_items,
             "color": color,
             "position": position,
             "writingStyle": self._writing_style,
         }
+        if attach_to_node:
+            options_dict["attachToNode"] = attach_to_node
         if position == "custom" or (x is not None and y is not None and position != "auto"):
             options_dict["x"] = x
             options_dict["y"] = y
@@ -1601,8 +2743,9 @@ class TutorAgent(Agent):
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        await asyncio.sleep(0.01)
-        return f"Plotted concept card '{title}' on whiteboard."
+        return await self._wait_for_board_sync_and_audit(
+            f"Plotted concept card '{clean_title}' on whiteboard (position='{position}')."
+        )
 
     @llm.function_tool(description="Draw standalone geometric figures (rectangles, ellipses, triangles in geometry) or physics vectors/arrows on the whiteboard. (Use label='...' to display numbers/letters centered inside shapes). MANDATORY: Do NOT use draw_shape to create branching diagrams, trees, or flowcharts — you MUST use draw_diagram instead.")
     async def draw_shape(
@@ -1653,24 +2796,51 @@ class TutorAgent(Agent):
         await asyncio.sleep(0.01)
         return f"Drew {shapeType} at ({x}, {y})" + (f" with label '{label}'." if label else ".")
 
-    @llm.function_tool(description="Write animated handwritten prose text, titles, subtitles, linguistic definitions, or notes on the digital whiteboard in English or German only. Use style='title' for prominent main titles (44px, bold), style='subtitle' or decorated=True for section headers with an aesthetic glowing underline, or style='body' for regular handwriting notes. MANDATORY when writing style is Handwriting or Mixed.")
-    async def write_text(self, text: str, x: float, y: float, direction: str = "ltr", style: str = "auto", decorated: bool = False):
+    @llm.function_tool(description="Write animated handwritten prose text, titles, subtitles, linguistic definitions, or notes on the digital whiteboard in English or German only. Supports explicit font_size (e.g. 12 to 80px; default 44px for titles, 32px for subtitles, 24px for regular handwriting notes). Use style='title' for prominent main titles (44px, bold), style='subtitle' or decorated=True for section headers with an aesthetic glowing underline, or style='body' for regular handwriting notes. Pass attach_to_node='...' or slot='side_notes' to position automatically without coordinate math. MANDATORY when writing style is Handwriting or Mixed.")
+    async def write_text(self, text: str, x: float = 140, y: float = 200, direction: str = "ltr", style: str = "auto", decorated: bool = False, slot: str = "auto", attach_to_node: str = "", font_size: typing.Optional[int] = None):
         if self._writing_style == "normal":
             return "ERROR: The user changed the mode to Normal Text Only. You MUST immediately retry using the 'write_normal_text' tool instead."
         """Writes animated handwritten text on the whiteboard in English or German only."""
+        clean_text = str(text or "").replace("\\n", "\n").replace("\\t", " ")
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] write_text intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Write handwritten note on the board: '{clean_text}'."
+            if font_size is not None:
+                instruction += f" Font size: {font_size}px."
+            if style and style != "auto":
+                instruction += f" Style: {style}."
+            if slot and slot != "auto":
+                instruction += f" Slot: {slot}."
+            if attach_to_node:
+                instruction += f" Attach to node: {attach_to_node}."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native write_text")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native write_text")
+
         if style == "auto":
-            is_title = (y <= 125) or ("title" in text.lower() or "topic" in text.lower())
+            is_title = (y <= 125) or ("title" in clean_text.lower() or "topic" in clean_text.lower())
             resolved_style = "title" if is_title else ("subtitle" if decorated else "body")
         else:
             resolved_style = style
         if decorated and resolved_style == "body":
             resolved_style = "subtitle"
-        fontSize = 44 if resolved_style == "title" else (32 if resolved_style == "subtitle" else 24)
+        if font_size is not None:
+            fontSize = int(font_size)
+        else:
+            fontSize = 44 if resolved_style == "title" else (32 if resolved_style == "subtitle" else 24)
         payload = {
             "type": "handwriting",
             "payload": {
                 "kind": "handwriting",
-                "text": text,
+                "text": clean_text,
                 "position": {"x": x, "y": y},
                 "style": resolved_style,
                 "fontSize": fontSize,
@@ -1678,20 +2848,41 @@ class TutorAgent(Agent):
                 "direction": direction,
                 "options": {
                     "underline": decorated or resolved_style in ("title", "subtitle"),
+                    "slot": slot,
+                    "attachToNode": attach_to_node,
                 },
             },
         }
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        await asyncio.sleep(0.01)
-        return f"Wrote '{text}' on whiteboard."
+        return await self._wait_for_board_sync_and_audit(f"Wrote '{clean_text}' on whiteboard.")
 
-    @llm.function_tool(description="Write plain prose text, definitions, terminology mappings, conceptual distinctions, rules, or structured bullet notes on the digital whiteboard in English or German only (rendered immediately). Supports markdown bold **text** or colons 'Term:' for bold subheaders. Set style='subtitle' or decorated=True if this is a section heading you want underlined. MANDATORY when writing style is Normal or Mixed.")
-    async def write_normal_text(self, text: str, x: float, y: float, font_size: int = 24, color: str = "#FFFFFF", direction: str = "ltr", style: str = "normal", decorated: bool = False):
+    @llm.function_tool(description="Write plain prose text, definitions, terminology mappings, conceptual distinctions, rules, or structured bullet notes on the digital whiteboard in English or German only (rendered immediately). Supports markdown bold **text** or colons 'Term:' for bold subheaders. Set style='subtitle' or decorated=True if this is a section heading you want underlined. Pass attach_to_node='...' (e.g. 'Supervised Learning') or slot='side_notes' to position automatically without coordinate math. MANDATORY when writing style is Normal or Mixed.")
+    async def write_normal_text(self, text: str, x: float = 140, y: float = 200, font_size: int = 24, color: str = "#FFFFFF", direction: str = "ltr", style: str = "normal", decorated: bool = False, slot: str = "auto", attach_to_node: str = ""):
         if self._writing_style == "handwriting":
             return "ERROR: The user changed the mode to Handwriting Only. You MUST immediately retry using the 'write_text' tool instead."
         """Writes normal text, numbers, or step notes on the whiteboard in English or German only (renders immediately)."""
+        clean_text = str(text or "").replace("\\n", "\n").replace("\\t", " ")
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] write_normal_text intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Write text note on the board: '{clean_text}'."
+            if slot and slot != "auto":
+                instruction += f" Slot: {slot}."
+            if attach_to_node:
+                instruction += f" Attach to node: {attach_to_node}."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native write_normal_text")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native write_normal_text")
+
         payload = {
             "type": "shape",
             "payload": {
@@ -1700,21 +2891,104 @@ class TutorAgent(Agent):
                 "x": x,
                 "y": y,
                 "options": {
-                    "text": text,
+                    "text": clean_text,
                     "fontSize": font_size,
                     "color": color,
                     "direction": direction,
                     "writingStyle": self._writing_style,
                     "style": style,
                     "underline": decorated or style in ("title", "subtitle"),
+                    "slot": slot,
+                    "attachToNode": attach_to_node,
                 },
             },
         }
         await self._room.local_participant.publish_data(
             json.dumps(payload).encode("utf-8")
         )
-        await asyncio.sleep(0.01)
-        return f"Wrote normal text '{text}' on whiteboard."
+        return await self._wait_for_board_sync_and_audit(f"Wrote normal text '{clean_text}' on whiteboard.")
+
+    @llm.function_tool(
+        description="Surgically edit, rename, resize font size (from 12 to 80px for handwriting, normal text, and math), append to, re-orient, delete a single node/bullet from, or move any existing text block, mathematical formula, shape label, diagram node, or diagram on the active slide IN PLACE without erasing the whole diagram or opening a new slide. Fully supports changing font_size of handwritten text. MANDATORY whenever making localized edits, font size changes, or corrections."
+    )
+    async def update_whiteboard_item(
+        self,
+        target: str,
+        new_text: str = "",
+        action: typing.Literal["replace", "replace_substring", "append", "delete_node"] = "replace",
+        old_substring: str = "",
+        new_items: typing.Optional[list[str]] = None,
+        new_direction: typing.Optional[typing.Literal["TB", "BT", "LR", "RL"]] = None,
+        color: typing.Optional[str] = None,
+        x: typing.Optional[float] = None,
+        y: typing.Optional[float] = None,
+        font_size: typing.Optional[int] = None,
+        new_label: typing.Optional[str] = None,
+    ):
+        """
+        Surgically updates an existing element or diagram node on the active whiteboard slide in place.
+        target: Exact or partial label/text of the existing item, diagram node, bullet note, or diagram title to modify (e.g. 'Supervised Learning', 'Sub-topic', '...', 'Regression', 'x^2 + 1', 'I am Mohamed').
+        new_text: Updated text, node label, or LaTeX formula (unescaped automatically).
+        action:
+          - 'replace' (default): Replace the matched node's label, bullet item, or standalone text/formula with new_text (or replace its bullet list with new_items).
+          - 'replace_substring': Replace only old_substring inside target with new_text.
+          - 'append': Append new_text or new_items to the existing text block or diagram node's bullet points.
+          - 'delete_node': Remove only the matched node or bullet item from a diagram (or remove the standalone item) while keeping the rest of the diagram intact.
+        old_substring: Substring to replace when action='replace_substring'.
+        new_items: Optional list of bullet items to set or append under a matched diagram node.
+        new_direction: Optional new orientation ('TB', 'BT', 'LR', 'RL') to flip an existing diagram in place.
+        color: Optional new hex color (e.g. '#4ECDC4', '#FFAB00').
+        x, y: Optional new coordinates if moving a standalone item.
+        font_size: Optional new font size in pixels (e.g. 12 to 80px). Fully supported for all items including handwriting, normal text, and formulas.
+        """
+        if new_text == "" and new_label:
+            new_text = new_label
+        if (
+            getattr(self, "executive_dispatcher", None)
+            and self.executive_dispatcher.is_enabled()
+            and not getattr(self, "_inside_executive_call", False)
+        ):
+            print(f">>> [AGENT] update_whiteboard_item intercepted -> forwarding to Executive Model ({self.executive_dispatcher.get_active_config().get('modelId')})")
+            instruction = f"Surgically update whiteboard item target='{target}'. action='{action}', new_text='{new_text}', old_substring='{old_substring}', new_items={new_items}, new_direction='{new_direction}', font_size={font_size}, color='{color}', delete_node={action == 'delete_node'}."
+            try:
+                success, report = await self.executive_dispatcher.execute_instruction(instruction)
+                if success:
+                    return report
+                print(f">>> [AGENT] Executive delegation returned False ({report}), proceeding with native update_whiteboard_item")
+            except Exception as e:
+                print(f">>> [AGENT] Executive delegation error ({e}), proceeding with native update_whiteboard_item")
+
+        update_payload: dict[str, typing.Any] = {
+            "target": str(target or "").replace("\\n", "\n").strip(),
+            "action": action,
+        }
+        if new_text != "":
+            update_payload["newText"] = str(new_text).replace("\\n", "\n").replace("\\t", " ")
+        if old_substring:
+            update_payload["oldSubstring"] = str(old_substring).replace("\\n", "\n")
+        if new_items is not None:
+            update_payload["newItems"] = [str(it).replace("\\n", "\n").replace("\\t", " ").strip() for it in new_items]
+        if new_direction:
+            update_payload["newDirection"] = new_direction
+        if color:
+            update_payload["color"] = color
+        if x is not None:
+            update_payload["x"] = x
+        if y is not None:
+            update_payload["y"] = y
+        if font_size is not None:
+            update_payload["fontSize"] = font_size
+
+        payload = {
+            "type": "update_item",
+            "payload": update_payload,
+        }
+        await self._room.local_participant.publish_data(
+            json.dumps(payload).encode("utf-8")
+        )
+        return await self._wait_for_board_sync_and_audit(
+            f"Surgically updated whiteboard item '{target}' in place (action='{action}')."
+        )
 
 
 _active_vision_server = None
@@ -1739,19 +3013,192 @@ def _is_pure_thought_or_status_content(server_content: typing.Any) -> bool:
     return True
 
 
+async def execute_auto_healed_whiteboard_action(
+    tutor_agent: typing.Any,
+    user_prompt: str,
+    model_announced: str,
+    broadcast_fn: typing.Optional[typing.Callable[..., typing.Any]] = None,
+    agent_session: typing.Any = None,
+) -> bool:
+    """
+    Auto-healing execution bridge for gemini-3.8-live-extended-thinking:
+    When Google's extended-thinking live server experiences the upstream server-side tool dispatch bug (Issue #3015)
+    or hangs in IN_PROGRESS, this handler deduces the intended whiteboard operation using Gemini and executes it
+    directly on the whiteboard without letting the user experience a 96-second stall or a system error apology.
+    """
+    if not tutor_agent or not user_prompt:
+        return False
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+        api_key, _ = resolve_gemini_api_key()
+        if not api_key:
+            return False
+        client = genai.Client(api_key=api_key)
+
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "tool": {
+                    "type": "STRING",
+                    "enum": ["draw_diagram", "write_normal_text", "write_math"],
+                },
+                "diagram_args": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "title": {"type": "STRING"},
+                        "diagram_type": {"type": "STRING", "enum": ["tree", "flowchart", "process", "comparison", "hybrid"]},
+                        "direction": {"type": "STRING", "enum": ["TB", "BT", "LR", "RL"]},
+                        "root": {"type": "STRING"},
+                        "nodes": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "label": {"type": "STRING"},
+                                    "items": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "flow": {"type": "STRING", "enum": ["auto", "down", "right", "left", "up"]},
+                                },
+                                "required": ["label"],
+                            },
+                        },
+                    },
+                    "required": ["title", "nodes"],
+                },
+                "text_args": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "text": {"type": "STRING"},
+                    },
+                },
+                "math_args": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "latex": {"type": "STRING"},
+                    },
+                },
+                "spoken_confirmation": {
+                    "type": "STRING",
+                    "description": "Short, natural, friendly spoken confirmation in Egyptian Arabic explaining the whiteboard action",
+                },
+            },
+            "required": ["tool", "spoken_confirmation"],
+        }
+
+        system_prompt = (
+            "You are the executive Whiteboard Coordinator for an AI Tutor. "
+            "The live voice model promised to draw or write on the whiteboard for the student, but the background live tool bridge stalled. "
+            "Based on what the student requested and what the model announced, determine the exact tool and arguments to execute on the whiteboard. "
+            "Always follow whiteboard best practices: Latin text for diagrams/math (English/German terms), concise node labels, clear hierarchical structure. "
+            "Output strictly valid JSON matching the schema."
+        )
+
+        user_content = (
+            f"Student request: '{user_prompt}'\n"
+            f"Model announced speech: '{model_announced}'\n"
+            "Generate the whiteboard tool call."
+        )
+
+        resp = None
+        for candidate_model in [
+            "models/gemini-3.8-flash",
+            "models/gemini-3.1-flash-lite-preview",
+            "models/gemini-3.5-flash",
+            "models/gemini-3-flash-preview",
+        ]:
+            try:
+                resp = await client.aio.models.generate_content(
+                    model=candidate_model,
+                    contents=user_content,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                        temperature=0.2,
+                    ),
+                )
+                if resp and resp.text:
+                    break
+            except Exception as e_model:
+                print(f">>> [AGENT] Auto-healer candidate '{candidate_model}' notice: {e_model}")
+
+        if not resp or not resp.text:
+            return False
+        data = json.loads(resp.text)
+        tool_name = data.get("tool")
+        confirmation = data.get("spoken_confirmation", "Done, I have drawn the diagram on the board!")
+
+        print(f">>> [AGENT] Auto-healer executing tool '{tool_name}' for gemini-3.8-live-extended-thinking...")
+
+        if tool_name == "draw_diagram":
+            d_args = data.get("diagram_args", {})
+            title = d_args.get("title") or "Diagram"
+            dtype = d_args.get("diagram_type", "tree")
+            direction = d_args.get("direction", "TB")
+            root = d_args.get("root", "") or title
+            raw_nodes = d_args.get("nodes", [])
+            node_objs = []
+            for n in raw_nodes:
+                node_objs.append(
+                    DiagramNode(
+                        label=str(n.get("label") or ""),
+                        items=[str(x) for x in (n.get("items") or [])],
+                        flow=n.get("flow") or "auto",
+                    )
+                )
+            await tutor_agent.draw_diagram(
+                title=title,
+                diagram_type=dtype,
+                root=root,
+                nodes=node_objs,
+                direction=direction,
+            )
+        elif tool_name == "write_normal_text":
+            t_args = data.get("text_args", {})
+            txt = t_args.get("text") or ""
+            if txt:
+                await tutor_agent.write_normal_text(text=txt)
+        elif tool_name == "write_math":
+            m_args = data.get("math_args", {})
+            latex = m_args.get("latex") or ""
+            if latex:
+                await tutor_agent.write_math(latex=latex)
+
+        if broadcast_fn:
+            await broadcast_fn("assistant", confirmation)
+        if agent_session and hasattr(agent_session, "say"):
+            try:
+                agent_session.say(confirmation)
+            except Exception:
+                pass
+        return True
+    except Exception as ex:
+        print(f">>> [AGENT] Auto-healer execution notice: {ex}")
+        traceback.print_exc()
+        return False
+
+
 def install_zyren_realtime_session_hooks(
     broadcast_fn: typing.Optional[typing.Callable[..., typing.Any]] = None,
     accumulator: typing.Optional[UserTurnTranscriptAccumulator] = None,
     agent_session: typing.Any = None,
+    tutor_agent: typing.Any = None,
 ) -> None:
     """
     Installs idempotent lifecycle hooks onto LiveKit's Google RealtimeSession to guarantee:
     1. Pure internal `thought` / `interaction_status` packets in `gemini-3.8-live-extended-thinking` never open bogus empty SpeechHandles or self-interrupt active tools.
     2. Multi-step `interaction_status=IN_PROGRESS` and `NON_BLOCKING` post-tool continuations queue cleanly without triggering fake `input_speech_started` self-barge-ins (while preserving 100% of real user interruptions via `sc.interrupted` and local VAD).
     3. `FunctionResponse.scheduling` is stripped automatically on `gemini-3.8-live-extended-thinking` to prevent WebSocket `1007 Invalid Argument` closures.
-    4. Zero-latency live chat transcription & assistant reply broadcasting.
+    4. Auto-healing Watchdog for `gemini-3.8-live-extended-thinking` that intercepts Google server-side tool dispatch stalls/crashes (Issue #3015) and fulfills whiteboard actions seamlessly.
+    5. Zero-latency live chat transcription & assistant reply broadcasting.
     """
     from livekit.plugins.google.realtime import realtime_api
+
+    try:
+        from livekit.agents.voice import speech_handle
+        speech_handle.INTERRUPTION_TIMEOUT = 120.0
+    except Exception:
+        pass
 
     if broadcast_fn is not None:
         realtime_api.RealtimeSession._zyren_active_broadcast_fn = broadcast_fn
@@ -1759,6 +3206,8 @@ def install_zyren_realtime_session_hooks(
         realtime_api.RealtimeSession._zyren_active_accumulator = accumulator
     if agent_session is not None:
         realtime_api.RealtimeSession._zyren_active_agent_session = agent_session
+    if tutor_agent is not None:
+        realtime_api.RealtimeSession._zyren_active_tutor_agent = tutor_agent
 
     # 1. Hook _is_new_generation: ignore pure thought-only / interaction_status-only packets & track interaction_status
     if not hasattr(realtime_api.RealtimeSession, "_zyren_orig_is_new_generation"):
@@ -1798,6 +3247,10 @@ def install_zyren_realtime_session_hooks(
 
             def _zyren_handle_tool_calls(rt_self, tool_call):
                 rt_self._zyren_last_tool_call_ts = time.time()
+                # Cancel pending watchdog timer if Google delivered a tool call natively
+                wd = getattr(rt_self, "_zyren_ext_thinking_watchdog", None)
+                if wd and not wd.done():
+                    wd.cancel()
                 return realtime_api.RealtimeSession._zyren_orig_handle_tool_calls(rt_self, tool_call)
 
             realtime_api.RealtimeSession._handle_tool_calls = _zyren_handle_tool_calls
@@ -1844,6 +3297,14 @@ def install_zyren_realtime_session_hooks(
                 if getattr(rt_self, "_zyren_suppress_speech_started_once", False):
                     rt_self._zyren_suppress_speech_started_once = False
                     return
+
+                # Suppress false speech interruption when the student microphone is muted in UI
+                tutor_ag = getattr(rt_self, "_zyren_active_tutor_agent", None) or getattr(
+                    realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None
+                )
+                if tutor_ag is not None and not getattr(tutor_ag, "student_mic_enabled", True):
+                    return
+
                 return realtime_api.RealtimeSession._zyren_orig_handle_input_speech_started(rt_self)
 
             realtime_api.RealtimeSession._handle_input_speech_started = _zyren_handle_input_speech_started
@@ -1880,6 +3341,13 @@ def install_zyren_realtime_session_hooks(
                 active_sess = getattr(realtime_api.RealtimeSession, "_zyren_active_agent_session", None)
                 if active_sess is not None:
                     rt_self._zyren_agent_session_ref = active_sess
+                active_tutor = getattr(realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None)
+                if active_tutor is not None:
+                    rt_self._zyren_tutor_agent_ref = active_tutor
+
+                opts = getattr(rt_self, "_opts", None)
+                active_model = str(getattr(opts, "model", "")).lower()
+                is_ext_thinking = "extended-thinking" in active_model
 
                 if server_content is not None:
                     istatus = getattr(server_content, "interaction_status", None)
@@ -1892,12 +3360,65 @@ def install_zyren_realtime_session_hooks(
                     if getattr(server_content, "interrupted", False):
                         rt_self._zyren_interaction_in_progress = False
                         rt_self._zyren_last_tool_call_ts = 0.0
+                        wd = getattr(rt_self, "_zyren_ext_thinking_watchdog", None)
+                        if wd and not wd.done():
+                            wd.cancel()
                         curr_g = getattr(rt_self, "_current_generation", None)
                         if curr_g and hasattr(curr_g, "output_text"):
                             curr_g.output_text = ""
+                        # Discard interrupted generation text without desyncing LiveKit SegmentSynchronizer
 
                 curr_gen = getattr(rt_self, "_current_generation", None)
                 if not curr_gen and _is_pure_thought_or_status_content(server_content) and not getattr(server_content, "interrupted", False):
+                    return
+
+                # Upfront suppression of Google's server-side tool crash error for gemini-3.8-live-extended-thinking
+                sc_txt = ""
+                if getattr(server_content, "output_transcription", None):
+                    sc_txt = str(getattr(server_content.output_transcription, "text", "") or "")
+
+                is_sc_system_error = is_ext_thinking and any(
+                    err_phrase in sc_txt
+                    for err_phrase in [
+                        "حدث خطأ في النظام",
+                        "system error occurred",
+                        "اعتذر جداً، حدث خطأ",
+                        "اعتذر جدا، حدث خطأ",
+                        "أعتذر جداً، حدث خطأ",
+                        "أعتذر جدا، حدث خطأ",
+                    ]
+                )
+                if is_sc_system_error:
+                    print(">>> [AGENT] Intercepted Google server error chunk on gemini-3.8-live-extended-thinking! Suppressing audio/text & auto-healing...")
+                    if curr_gen and hasattr(curr_gen, "output_text"):
+                        curr_gen.output_text = ""
+                    if active_sess and hasattr(active_sess, "interrupt"):
+                        try:
+                            active_sess.interrupt(force=True)
+                        except Exception:
+                            pass
+                    if not getattr(rt_self, "_zyren_auto_healing_running", False):
+                        rt_self._zyren_auto_healing_running = True
+                        u_prompt = getattr(rt_self, "_zyren_last_user_prompt", "")
+                        announced = getattr(rt_self, "_zyren_last_announced_action", "") or "whiteboard diagram"
+                        t_agent = getattr(rt_self, "_zyren_tutor_agent_ref", None) or getattr(
+                            realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None
+                        )
+                        bcast_fn = getattr(realtime_api.RealtimeSession, "_zyren_active_broadcast_fn", None)
+                        loop = asyncio.get_running_loop()
+                        async def _instant_recover():
+                            try:
+                                await execute_auto_healed_whiteboard_action(
+                                    tutor_agent=t_agent,
+                                    user_prompt=u_prompt,
+                                    model_announced=announced,
+                                    broadcast_fn=bcast_fn,
+                                    agent_session=active_sess,
+                                )
+                            finally:
+                                rt_self._zyren_auto_healing_running = False
+                                rt_self._zyren_interaction_in_progress = False
+                        loop.create_task(_instant_recover())
                     return
 
                 realtime_api.RealtimeSession._zyren_orig_handle_server_content(rt_self, server_content)
@@ -1913,11 +3434,100 @@ def install_zyren_realtime_session_hooks(
                         rt_self._zyren_last_user_speech_ts = time.time()
                         txt = getattr(curr_gen, "input_transcription", "")
                         if txt and txt.strip():
+                            rt_self._zyren_last_user_prompt = txt.strip()
                             if acc is not None:
                                 uid, utxt = acc.update_user_segment(curr_gen.input_id, txt.strip())
                             else:
                                 uid, utxt = curr_gen.input_id, txt.strip()
                             loop.create_task(bcast_fn("user", utxt, msg_id=uid))
+
+                    out_live = getattr(curr_gen, "output_text", "")
+
+                    # Active Interception for gemini-3.8-live-extended-thinking:
+                    # 1. Suppress upstream Google backend system errors (Issue #3015)
+                    is_system_error = is_ext_thinking and any(
+                        err_phrase in out_live
+                        for err_phrase in [
+                            "حدث خطأ في النظام",
+                            "system error occurred",
+                            "اعتذر جداً، حدث خطأ",
+                            "اعتذر جدا، حدث خطأ",
+                            "أعتذر جداً، حدث خطأ",
+                            "أعتذر جدا، حدث خطأ",
+                        ]
+                    )
+                    if is_system_error:
+                        print(">>> [AGENT] Intercepted Google server error on gemini-3.8-live-extended-thinking! Suppressing and auto-healing...")
+                        curr_gen.output_text = ""
+                        if active_sess and hasattr(active_sess, "interrupt"):
+                            try:
+                                active_sess.interrupt(force=True)
+                            except Exception:
+                                pass
+                        if not getattr(rt_self, "_zyren_auto_healing_running", False):
+                            rt_self._zyren_auto_healing_running = True
+                            u_prompt = getattr(rt_self, "_zyren_last_user_prompt", "")
+                            announced = getattr(rt_self, "_zyren_last_announced_action", "") or "whiteboard diagram"
+                            t_agent = getattr(rt_self, "_zyren_tutor_agent_ref", None) or getattr(
+                                realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None
+                            )
+                            async def _instant_recover():
+                                try:
+                                    await execute_auto_healed_whiteboard_action(
+                                        tutor_agent=t_agent,
+                                        user_prompt=u_prompt,
+                                        model_announced=announced,
+                                        broadcast_fn=bcast_fn,
+                                        agent_session=active_sess,
+                                    )
+                                finally:
+                                    rt_self._zyren_auto_healing_running = False
+                                    rt_self._zyren_interaction_in_progress = False
+                            loop.create_task(_instant_recover())
+                        return
+
+                    # 2. Watchdog for gemini-3.8-live-extended-thinking when tool intent announced but server stalls in IN_PROGRESS
+                    if is_ext_thinking and getattr(rt_self, "_zyren_interaction_in_progress", False):
+                        tool_keywords = [
+                            "هرسم", "هكتب", "سأرسم", "سأكتب", "draw", "write", "diagram",
+                            "مخطط", "معادلة", "بوردة", "سبورة", "دقيقة واحدة", "ثواني", "هوضح لك"
+                        ]
+                        if any(kw in out_live for kw in tool_keywords):
+                            rt_self._zyren_last_announced_action = out_live
+                            existing_wd = getattr(rt_self, "_zyren_ext_thinking_watchdog", None)
+                            if not existing_wd or existing_wd.done():
+                                async def _watchdog_timer():
+                                    await asyncio.sleep(3.5)
+                                    if (
+                                        getattr(rt_self, "_zyren_interaction_in_progress", False)
+                                        and not getattr(rt_self, "_zyren_auto_healing_running", False)
+                                        and (time.time() - getattr(rt_self, "_zyren_last_tool_call_ts", 0.0)) > 3.0
+                                    ):
+                                        print(">>> [AGENT] gemini-3.8-live-extended-thinking tool bridge stalled (Issue #3015). Auto-healer activating...")
+                                        rt_self._zyren_auto_healing_running = True
+                                        try:
+                                            u_prompt = getattr(rt_self, "_zyren_last_user_prompt", "")
+                                            announced = getattr(rt_self, "_zyren_last_announced_action", "")
+                                            t_agent = getattr(rt_self, "_zyren_tutor_agent_ref", None) or getattr(
+                                                realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None
+                                            )
+                                            await execute_auto_healed_whiteboard_action(
+                                                tutor_agent=t_agent,
+                                                user_prompt=u_prompt,
+                                                model_announced=announced,
+                                                broadcast_fn=bcast_fn,
+                                                agent_session=active_sess,
+                                            )
+                                        finally:
+                                            rt_self._zyren_auto_healing_running = False
+                                            rt_self._zyren_interaction_in_progress = False
+                                rt_self._zyren_ext_thinking_watchdog = loop.create_task(_watchdog_timer())
+
+                    if getattr(server_content, "output_transcription", None):
+                        if out_live and out_live.strip():
+                            loop.create_task(
+                                bcast_fn("assistant", out_live.strip(), msg_id=curr_gen.response_id)
+                            )
 
                     if getattr(server_content, "generation_complete", False):
                         in_txt = getattr(curr_gen, "input_transcription", "")
@@ -1927,15 +3537,14 @@ def install_zyren_realtime_session_hooks(
                             else:
                                 uid, utxt = curr_gen.input_id, in_txt.strip()
                             loop.create_task(bcast_fn("user", utxt, msg_id=uid))
-                        out_txt = getattr(curr_gen, "output_text", "")
-                        if out_txt and out_txt.strip():
+                        if out_live and out_live.strip():
                             if acc is not None and not getattr(rt_self, "_zyren_interaction_in_progress", False):
                                 acc.reset_after_assistant_reply()
                             loop.create_task(
-                                bcast_fn("assistant", out_txt.strip(), msg_id=curr_gen.response_id)
+                                bcast_fn("assistant", out_live.strip(), msg_id=curr_gen.response_id)
                             )
-                except Exception:
-                    pass
+                except Exception as hook_ex:
+                    print(f">>> [AGENT] _live_handle_server_content broadcast notice: {hook_ex}")
 
             realtime_api.RealtimeSession._handle_server_content = _live_handle_server_content
 
@@ -1996,6 +3605,27 @@ def install_zyren_realtime_session_hooks(
 
             realtime_api.RealtimeSession._handle_go_away = _zyren_handle_go_away
 
+    # 7. Hook _report_connection_acquired: automatic session resumption on WebSocket reconnect (every 9 min Google GoAway)
+    if not hasattr(realtime_api.RealtimeSession, "_zyren_orig_report_connection_acquired"):
+        orig_report = getattr(realtime_api.RealtimeSession, "_report_connection_acquired", None)
+        if orig_report:
+            realtime_api.RealtimeSession._zyren_orig_report_connection_acquired = orig_report
+
+            def _zyren_report_connection_acquired(rt_self, duration):
+                res = realtime_api.RealtimeSession._zyren_orig_report_connection_acquired(rt_self, duration)
+                try:
+                    active_tutor = getattr(rt_self, "_zyren_tutor_agent_ref", None) or getattr(
+                        realtime_api.RealtimeSession, "_zyren_active_tutor_agent", None
+                    )
+                    if active_tutor is not None and hasattr(active_tutor, "_on_gemini_live_reconnected"):
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(active_tutor._on_gemini_live_reconnected(rt_self))
+                except Exception as e_rec:
+                    print(f">>> [AGENT] Error in reconnect handler hook: {e_rec}")
+                return res
+
+            realtime_api.RealtimeSession._report_connection_acquired = _zyren_report_connection_acquired
+
 
 # Ensure RealtimeSession lifecycle hooks are installed immediately at import time
 install_zyren_realtime_session_hooks()
@@ -2015,6 +3645,7 @@ async def entrypoint(ctx: JobContext):
         vocal_tone = "natural"
         learner_profile = "general"
         learner_name = ""
+        tutor_name = "Zyren"
         language_config = {
             "autoDetect": False,
             "primary": "ar-EG",
@@ -2203,6 +3834,7 @@ async def entrypoint(ctx: JobContext):
                 try:
                     last_frame_sent_time = 0.0
                     prev_thumb = None
+                    pending_force_frame = None
                     async for message in ws:
                         if ws != active_vision_ws:
                             break
@@ -2239,9 +3871,19 @@ async def entrypoint(ctx: JobContext):
                                 has_active_video = bool(data.get("hasActiveVideo"))
                                 force_frame = bool(data.get("force"))
 
-                                # Never inject frames while speaking unless forced on idle; allow 1 FPS (0.9s) for active video
-                                if agent_state == "speaking" or (agent_state == "thinking" and not force_frame):
+                                # Strictly suppress sending vision frames into Gemini Live while speaking/thinking
+                                # to prevent server-side audio interruption and speech truncation
+                                if agent_state in ("speaking", "thinking"):
+                                    if force_frame:
+                                        pending_force_frame = data
                                     continue
+
+                                # If we have a pending post-draw force frame, dispatch it immediately once speaking ends
+                                if pending_force_frame is not None:
+                                    data = pending_force_frame
+                                    pending_force_frame = None
+                                    has_active_video = bool(data.get("hasActiveVideo"))
+                                    force_frame = bool(data.get("force"))
 
                                 now = time.time()
                                 min_interval = 0.0 if force_frame else (0.9 if has_active_video else 2.0)
@@ -2320,38 +3962,51 @@ async def entrypoint(ctx: JobContext):
                 _active_vision_server = None
 
         last_bcast_assistant_text = ""
+        last_bcast_assistant_id = ""
         last_bcast_assistant_ts = 0.0
 
         async def broadcast_chat_message(role: str, text: str, msg_id: str | None = None):
-            nonlocal last_bcast_assistant_text, last_bcast_assistant_ts
+            nonlocal last_bcast_assistant_text, last_bcast_assistant_id, last_bcast_assistant_ts
             try:
                 clean = (text or "").strip()
                 if not clean:
                     return
                 now = time.time()
+                eff_id = msg_id or f"msg-{int(now*1000)}-{os.urandom(2).hex()}"
                 if role == "assistant":
                     clean = deduplicate_repeated_phrases(clean)
                     if not clean:
                         return
-                    if clean == last_bcast_assistant_text and (now - last_bcast_assistant_ts) < 25.0:
+                    if (
+                        clean == last_bcast_assistant_text
+                        and eff_id == last_bcast_assistant_id
+                        and (now - last_bcast_assistant_ts) < 25.0
+                    ):
+                        return
+                    if (
+                        clean == last_bcast_assistant_text
+                        and eff_id != last_bcast_assistant_id
+                        and (now - last_bcast_assistant_ts) < 4.0
+                    ):
                         return
                     last_bcast_assistant_text = clean
+                    last_bcast_assistant_id = eff_id
                     last_bcast_assistant_ts = now
 
                 payload = {
                     "type": "chat_message",
                     "payload": {
-                        "id": msg_id or f"msg-{int(time.time()*1000)}-{os.urandom(2).hex()}",
+                        "id": eff_id,
                         "role": role,
                         "text": clean,
-                        "timestamp": int(time.time() * 1000),
+                        "timestamp": int(now * 1000),
                     },
                 }
                 await ctx.room.local_participant.publish_data(
                     json.dumps(payload).encode("utf-8")
                 )
-            except Exception:
-                pass
+            except Exception as bcast_err:
+                print(f">>> [AGENT] broadcast_chat_message error ({role}): {bcast_err}")
 
         user_turn_accumulator = UserTurnTranscriptAccumulator()
 
@@ -2378,13 +4033,15 @@ async def entrypoint(ctx: JobContext):
             broadcast_fn=broadcast_chat_message,
             accumulator=user_turn_accumulator,
             agent_session=session,
+            tutor_agent=agent,
         )
 
         async def send_user_multimodal_to_gemini(
             prompt_text: str = "",
             file_data_b64: str | None = None,
             mime_type: str = "image/jpeg",
-            file_name: str | None = None
+            file_name: str | None = None,
+            trigger_response: bool = True,
         ):
             try:
                 user_turn_accumulator.reset_after_assistant_reply()
@@ -2399,10 +4056,15 @@ async def entrypoint(ctx: JobContext):
                     if sil_ev is not None and hasattr(sil_ev, "set"):
                         sil_ev.set()
 
-                # 2. Extract active RealtimeSession from AgentActivity
+                # 2. Extract active RealtimeSession from AgentActivity with resilient wait loop
                 rt_session = None
-                if getattr(session, "_activity", None) and hasattr(session._activity, "realtime_llm_session"):
-                    rt_session = session._activity.realtime_llm_session
+                for _ in range(35):
+                    if getattr(session, "_activity", None) and hasattr(session._activity, "realtime_llm_session"):
+                        candidate = session._activity.realtime_llm_session
+                        if candidate and hasattr(candidate, "_send_client_event"):
+                            rt_session = candidate
+                            break
+                    await asyncio.sleep(0.1)
 
                 if rt_session and hasattr(rt_session, "_send_client_event"):
                     from google.genai import types as genai_types
@@ -2436,9 +4098,50 @@ async def entrypoint(ctx: JobContext):
                         except Exception as e_file:
                             print(f">>> [AGENT] Error decoding attached file: {e_file}")
 
-                    final_text = prompt_text.strip() if prompt_text else ""
-                    if not final_text and parts:
+                    # Ground student prompt with active whiteboard state and ongoing lesson topic
+                    grounding_parts = []
+                    board_state = getattr(agent, "board_state", None) or {}
+                    cur_slide = board_state.get("currentSlide", {})
+                    vault = getattr(agent, "session_context_vault", None) or {}
+
+                    session_title = vault.get("sessionTitle") or board_state.get("sessionTitle") or ""
+                    if session_title and not session_title.lower().startswith("untitled"):
+                        grounding_parts.append(f"Ongoing Lesson: '{session_title}'")
+
+                    slide_num = cur_slide.get("pageNumber", 1)
+                    slide_title = cur_slide.get("title") or vault.get("activeSlide", {}).get("title") or ""
+                    if slide_title and not slide_title.lower().startswith("slide "):
+                        grounding_parts.append(f"Active Slide {slide_num}: '{slide_title}'")
+
+                    media_items = cur_slide.get("mediaItems", [])
+                    media_descs = []
+                    for m in media_items:
+                        m_type = m.get("mediaType", "media")
+                        m_name = m.get("fileName") or m.get("title") or m.get("url") or ""
+                        if m_name:
+                            media_descs.append(f"{m_type}: '{m_name}'")
+                    if media_descs:
+                        grounding_parts.append(f"Media on board: {', '.join(media_descs)}")
+
+                    spatial = getattr(agent, "spatial_layout", None) or cur_slide.get("spatialLayout", {})
+                    layout_summary = spatial.get("layoutSummary", "")
+                    if layout_summary:
+                        grounding_parts.append(f"Diagrams on board: {layout_summary}")
+
+                    math_eqs = cur_slide.get("mathEquations", [])
+                    if math_eqs:
+                        grounding_parts.append(f"Math on board: {', '.join(math_eqs[:3])}")
+
+                    user_msg = prompt_text.strip() if prompt_text else ""
+                    if grounding_parts and user_msg:
+                        grounding_header = "[CURRENT WHITEBOARD GROUNDING: " + " | ".join(grounding_parts) + "]"
+                        final_text = f"{grounding_header}\n[STUDENT MESSAGE]: {user_msg}"
+                    elif user_msg:
+                        final_text = user_msg
+                    elif parts:
                         final_text = "Please review this attached file / image and explain it."
+                    else:
+                        final_text = ""
 
                     if final_text:
                         parts.append(genai_types.Part.from_text(text=final_text))
@@ -2451,11 +4154,13 @@ async def entrypoint(ctx: JobContext):
                                     parts=parts,
                                 )
                             ],
-                            turn_complete=True,
+                            turn_complete=trigger_response,
                         )
                         rt_session._send_client_event(event)
-                        rt_session._zyren_last_user_speech_ts = time.time()
-                        print(f">>> [AGENT] Successfully injected multimodal prompt into Gemini Live stream (parts: {len(parts)}, text: '{final_text}')")
+                        if trigger_response:
+                            rt_session._zyren_last_user_speech_ts = time.time()
+                        preview = (final_text[:100] + "...") if len(final_text) > 100 else final_text
+                        print(f">>> [AGENT] Successfully injected multimodal prompt into Gemini Live stream (parts: {len(parts)}, trigger_response={trigger_response}, text: '{preview}')")
                 else:
                     print(f">>> [AGENT] Warning: rt_session not ready yet to receive multimodal prompt.")
             except Exception as e:
@@ -2836,6 +4541,13 @@ async def entrypoint(ctx: JobContext):
                         new_learner_name=msg.get("learnerName") or msg.get("learner_name") or msg.get("student_name"),
                         new_tutor_name=msg.get("tutorName") or msg.get("tutor_name") or msg.get("teacher_name"),
                     )
+                elif msg_type == "update_internet_access":
+                    agent.internet_access_enabled = bool(msg.get("enabled", True))
+                    print(f">>> [AGENT] Updated internet_access_enabled to: {agent.internet_access_enabled}")
+                elif msg_type == "update_mic_state":
+                    is_enabled = bool(msg.get("enabled", True))
+                    agent.student_mic_enabled = is_enabled
+                    print(f">>> [AGENT] Updated student_mic_enabled to: {is_enabled}")
                 elif msg_type in ("reset_ai_memory", "reset_agent_context"):
                     print(">>> [AGENT] Received 'reset_ai_memory' command from student!")
                     # 1. Interrupt any current ongoing speech/generation immediately
@@ -2902,6 +4614,49 @@ async def entrypoint(ctx: JobContext):
                     except Exception as e_rt:
                         print(f">>> [AGENT] Error in hard reset of RealtimeSession: {e_rt}")
                         traceback.print_exc()
+                elif msg_type == "resume_session_context":
+                    payload = msg.get("payload", {})
+                    agent.session_context_vault = payload
+                    title = payload.get("sessionTitle") or "Tutoring Session"
+                    total_slides = payload.get("totalSlides", 1)
+                    active_slide = payload.get("activeSlide", {})
+                    all_slides = payload.get("allSlides", [])
+                    recent_turns = payload.get("recentChatTurns", [])
+                    total_messages = payload.get("totalMessages", 0)
+                    print(f">>> [AGENT] Resumed session context: '{title}' ({total_slides} slides, {total_messages} messages)")
+                    briefing_lines = [
+                        f"[SYSTEM / SESSION RESUMPTION CONTEXT]:",
+                        f"You are resuming an ongoing multi-slide tutoring session titled '{title}'.",
+                        f"The whiteboard presentation has {total_slides} slide(s). The student is currently on Slide {active_slide.get('pageNumber', 1)}: '{active_slide.get('title', '')}'.",
+                    ]
+                    if all_slides:
+                        briefing_lines.append("Slide Deck Overview:")
+                        for s in all_slides:
+                            briefing_lines.append(f"  - Slide {s.get('pageNumber')}: '{s.get('title')}' ({s.get('summary', '')})")
+                    act_eqs = active_slide.get("mathEquations", [])
+                    if act_eqs:
+                        briefing_lines.append(f"Active Slide Equations: {', '.join(act_eqs[:5])}")
+                    act_notes = active_slide.get("plainTextNotes", [])
+                    if act_notes:
+                        briefing_lines.append(f"Active Slide Notes: {' | '.join(act_notes[:5])}")
+                    if recent_turns:
+                        briefing_lines.append("Recent Conversation Turns:")
+                        for turn in recent_turns[-6:]:
+                            r_role = turn.get("role") or turn.get("sender") or "user"
+                            r_txt = turn.get("text") or turn.get("content") or ""
+                            briefing_lines.append(f"  [{str(r_role).upper()}]: {r_txt}")
+                    briefing_lines.append(
+                        "PEDAGOGICAL INSTRUCTIONS UPON RESUMPTION:\n"
+                        "- You have full continuity of this ongoing lesson. Do not restart from scratch or act like a stranger.\n"
+                        "- When the student speaks, respond directly and warmly, continuing naturally from this active slide and recent discussion.\n"
+                        "- You can use switch_whiteboard_slide(slide_number=...) to jump to or flip through any slide.\n"
+                        "- You can use recall_session_memory(query=...) to look up past notes or details on demand without token limits."
+                    )
+                    briefing_text = "\n".join(briefing_lines)
+                    asyncio.create_task(send_user_multimodal_to_gemini(
+                        prompt_text=briefing_text,
+                        trigger_response=False,
+                    ))
                 elif msg_type in ("prompt", "user_prompt", "chat", "text", "text_input", "multimodal_prompt", "file_upload"):
                     prompt_text = msg.get("text") or msg.get("prompt") or msg.get("content") or ""
                     file_b64 = msg.get("file") or msg.get("image") or msg.get("data")
@@ -2915,6 +4670,80 @@ async def entrypoint(ctx: JobContext):
                             mime_type=mime_type,
                             file_name=file_name
                         ))
+                elif msg_type == "quiz_submission":
+                    q_data = msg.get("payload", {})
+                    q_id = q_data.get("quizId", "")
+                    ans = q_data.get("answer", "")
+                    ans_text = q_data.get("answerText") or str(ans)
+                    is_corr = bool(q_data.get("isCorrect"))
+                    mode = q_data.get("mode", "click")
+                    q_type = q_data.get("quizType", "")
+                    q_question = q_data.get("question", "")
+                    q_exp = q_data.get("explanation", "")
+                    expected_ans = q_data.get("expectedAnswer") or q_data.get("explanation") or ""
+                    requires_eval = bool(q_data.get("requiresEvaluation")) or (q_type == "short_answer")
+
+                    if requires_eval:
+                        print(f">>> [AGENT] Evaluating student short answer/essay with AI: '{ans_text[:60]}...'")
+                        async def _evaluate_and_reply():
+                            eval_correct = False
+                            eval_feedback = ""
+                            try:
+                                eval_res = await agent.executive_dispatcher.evaluate_quiz_answer(
+                                    question=q_question,
+                                    expected_answer=expected_ans,
+                                    student_answer=ans_text,
+                                    explanation=q_exp,
+                                )
+                                eval_correct = bool(eval_res.get("is_correct", False))
+                                eval_feedback = str(eval_res.get("feedback", ""))
+                            except Exception as e_eval:
+                                print(f">>> [AGENT] Error in evaluate_quiz_answer: {e_eval}")
+                                eval_correct = False
+                                eval_feedback = f"Could not verify answer automatically. Expected: {expected_ans or q_exp}"
+
+                            # 1. ALWAYS send evaluation result to frontend (never leave card stuck)
+                            try:
+                                eval_payload = {
+                                    "type": "quiz_evaluation_result",
+                                    "payload": {
+                                        "quizId": q_id,
+                                        "isCorrect": eval_correct,
+                                        "feedback": eval_feedback,
+                                        "answer": ans,
+                                    },
+                                }
+                                await ctx.room.local_participant.publish_data(
+                                    json.dumps(eval_payload).encode("utf-8")
+                                )
+                            except Exception as e_pub:
+                                print(f">>> [AGENT] Error publishing quiz_evaluation_result: {e_pub}")
+
+                            # 2. Safely prompt Gemini Voice Tutor
+                            try:
+                                status_str = "CORRECT" if eval_correct else "INCORRECT"
+                                prompt_speech = (
+                                    f"[Student Whiteboard Action]: The student submitted an explanation for the quiz question ('{q_question}') on the whiteboard: '{ans_text}'. "
+                                    f"AI Evaluation Result: {status_str}! Pedagogical Feedback: {eval_feedback}. "
+                                    f"{'Congratulate them warmly and briefly highlight the strong points of their explanation.' if eval_correct else 'Gently address their answer, explain clearly what was missing or incorrect, and provide the correct understanding.'} "
+                                    f"Respond immediately in voice now in a natural tutor tone!"
+                                )
+                                await send_user_multimodal_to_gemini(prompt_text=prompt_speech)
+                            except Exception as e_speech:
+                                print(f">>> [AGENT] Error prompting voice agent: {e_speech}")
+
+                        asyncio.create_task(_evaluate_and_reply())
+                    elif mode in ("click", "drawing", "text"):
+                        print(f">>> [AGENT] Student submitted quiz answer via {mode}: '{ans_text}' (isCorrect={is_corr}) -> Prompting Voice Agent...")
+                        eval_status = "CORRECT" if is_corr else "INCORRECT"
+                        prompt_speech = (
+                            f"[Student Whiteboard Action]: The student just answered the quiz question ('{q_question}') on the whiteboard by {mode}ing option '{ans_text}'. "
+                            f"Result: {eval_status}! "
+                            f"{'Congratulate them warmly and briefly elaborate on why it is correct.' if is_corr else 'Gently encourage them, tell them it is not quite right, and invite them to try again or ask for a hint.'} "
+                            f"{('Explanation: ' + q_exp) if q_exp else ''} "
+                            f"Respond immediately in voice now in a natural tutor tone!"
+                        )
+                        asyncio.create_task(send_user_multimodal_to_gemini(prompt_text=prompt_speech))
             except Exception as ex:
                 print(f">>> [AGENT] Error in on_data_received: {ex}")
 

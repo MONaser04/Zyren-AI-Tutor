@@ -5,14 +5,21 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   deleteGeminiApiKey,
+  deleteProviderKey,
   deleteSavedSessionFromDisk,
+  fetchProviderModelsLive,
+  getIntermediateModelSettings,
+  listAllProviderStatuses,
   listSavedSessionsFromDisk,
   loadSavedSessionFromDisk,
   resolveGeminiApiKey,
   resolveMediaFileOnDisk,
+  saveIntermediateModelSettings,
   saveMediaBinaryToDisk,
+  saveProviderConfig,
   saveSessionSnapshotToDisk,
   saveVerifiedGeminiApiKey,
+  testProviderConnection,
   toggleSessionPinOnDisk,
   validateGeminiApiKeyLive,
 } from './src/server/zyrenBackendVault.ts'
@@ -190,6 +197,96 @@ function createZyrenApiMiddleware() {
         sendJson(res, 200, deleted)
       } catch (err: any) {
         sendJson(res, 500, { deleted: false, error: err?.message || 'Failed to delete API key.' })
+      }
+      return
+    }
+
+    // 2.5 Multi-Provider & Intermediate Executive Model Endpoints
+    if (pathname === '/api/providers' && method === 'GET') {
+      try {
+        const env = loadEnv('', process.cwd(), '')
+        const list = listAllProviderStatuses({ envVars: env })
+        sendJson(res, 200, { providers: list })
+      } catch (err: any) {
+        sendJson(res, 500, { providers: [], error: err?.message || 'Failed to list providers.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/providers/test' && method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 64 * 1024)
+        const providerId = String(body?.providerId || '').trim()
+        const customKey = typeof body?.apiKey === 'string' ? body.apiKey : undefined
+        const customBaseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : undefined
+        const result = await testProviderConnection(providerId, customKey, customBaseUrl)
+        sendJson(res, result.valid ? 200 : 400, result)
+      } catch (err: any) {
+        sendJson(res, 400, { valid: false, latencyMs: 0, error: err?.message || 'Test request failed.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/providers/models' && method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 64 * 1024)
+        const providerId = String(body?.providerId || '').trim()
+        const customKey = typeof body?.apiKey === 'string' ? body.apiKey : undefined
+        const customBaseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : undefined
+        const result = await fetchProviderModelsLive(providerId, customKey, customBaseUrl)
+        sendJson(res, result.ok ? 200 : 400, result)
+      } catch (err: any) {
+        sendJson(res, 500, { ok: false, models: [], error: err?.message || 'Failed to refresh models.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/providers/save' && method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 512 * 1024)
+        const providerId = String(body?.providerId || '').trim()
+        const saved = saveProviderConfig(providerId, {
+          apiKey: typeof body?.apiKey === 'string' ? body.apiKey : undefined,
+          baseUrl: typeof body?.baseUrl === 'string' ? body.baseUrl : undefined,
+          selectedModel: typeof body?.selectedModel === 'string' ? body.selectedModel : undefined,
+          thinkingLevel: body?.thinkingLevel,
+          cachedModels: Array.isArray(body?.cachedModels) ? body.cachedModels : undefined,
+        })
+        sendJson(res, 200, saved)
+      } catch (err: any) {
+        sendJson(res, 400, { ok: false, error: err?.message || 'Failed to save provider config.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/providers/key' && method === 'DELETE') {
+      try {
+        const providerId = parsedUrl.searchParams.get('providerId') || ''
+        const deleted = deleteProviderKey(providerId)
+        sendJson(res, 200, deleted)
+      } catch (err: any) {
+        sendJson(res, 500, { ok: false, error: err?.message || 'Failed to delete provider key.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/intermediate-model' && method === 'GET') {
+      try {
+        const settings = getIntermediateModelSettings()
+        sendJson(res, 200, { settings })
+      } catch (err: any) {
+        sendJson(res, 500, { error: err?.message || 'Failed to get intermediate model settings.' })
+      }
+      return
+    }
+
+    if (pathname === '/api/intermediate-model' && method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 64 * 1024)
+        const saved = saveIntermediateModelSettings(body)
+        sendJson(res, 200, { ok: true, settings: saved })
+      } catch (err: any) {
+        sendJson(res, 400, { ok: false, error: err?.message || 'Failed to update intermediate model settings.' })
       }
       return
     }

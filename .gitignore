@@ -48,4 +48,5 @@ livekit_server/livekit-server.exe
 *.sw?
 .aider*
 .claude/
+.agent_ready
 

@@ -47,8 +47,8 @@ export interface ICanvasAdapter {
    */
   rollbackToLastCommit(): void;
 
-  /** Resize the canvas to match container dimensions */
-  resize(width: number, height: number): void;
+  /** Resize the canvas to match container dimensions, with optional zoom scale for HiDPI crispness */
+  resize(width: number, height: number, zoom?: number): void;
 
   /** Get the bounds of a shape {x, y, width, height} */
   getShapeBounds(handle: ShapeHandle): { x: number; y: number; width: number; height: number };

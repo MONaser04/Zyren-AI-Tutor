@@ -50,6 +50,10 @@ export const FloatingVideoPiP: React.FC<FloatingVideoPiPProps> = ({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!isDraggingRef.current) return;
+    if (e.buttons === 0) {
+      handlePointerUp(e);
+      return;
+    }
     const dx = e.clientX - dragStartRef.current.mouseX;
     const dy = e.clientY - dragStartRef.current.mouseY;
     setPos({

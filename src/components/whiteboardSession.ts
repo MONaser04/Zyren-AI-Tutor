@@ -68,18 +68,46 @@ export function reconcileLiveChatMessages(
     const prevMsg = updated[existingIdx];
     const prevText = (prevMsg.text || '').trim();
     const effectiveRole = item.role || prevMsg.role;
+    const hasNewerUserTurn =
+      effectiveRole === 'assistant' && prev.slice(existingIdx + 1).some((m) => m.role === 'user');
+
+    if (hasNewerUserTurn && !cleanText.startsWith(prevText) && !prevText.startsWith(cleanText)) {
+      // A new assistant turn reused an older ID after a user spoke: append as a fresh turn at the bottom
+      return [
+        ...prev,
+        {
+          id: `${item.id}-${Date.now()}`,
+          role: effectiveRole,
+          text: cleanText,
+          timestamp: item.timestamp || Date.now(),
+        },
+      ];
+    }
+
     const nextText =
       effectiveRole === 'user' &&
       cleanText.length < prevText.length &&
       !prevText.startsWith(cleanText) &&
       !prevText.includes(cleanText)
         ? `${prevText} ${cleanText}`.trim()
-        : cleanText;
-    updated[existingIdx] = {
+        : effectiveRole === 'assistant' && prevText.length > cleanText.length && prevText.startsWith(cleanText)
+          ? prevText
+          : cleanText;
+
+    const updatedMsg: ChatMessage = {
       ...prevMsg,
       text: nextText,
       role: effectiveRole,
+      timestamp: item.timestamp || prevMsg.timestamp,
     };
+
+    if (hasNewerUserTurn) {
+      updated.splice(existingIdx, 1);
+      updated.push(updatedMsg);
+      return updated;
+    }
+
+    updated[existingIdx] = updatedMsg;
     return updated;
   }
 

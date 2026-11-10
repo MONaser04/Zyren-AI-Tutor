@@ -10,6 +10,8 @@ export interface AppConfigFile {
   keyDeletedByUser?: boolean;
   updatedAt?: number;
   verifiedAt?: number;
+  providers?: Record<string, StoredProviderConfig>;
+  intermediateModel?: IntermediateModelSettings;
 }
 
 export interface ResolvedKeyInfo {
@@ -771,4 +773,444 @@ export function toggleSessionPinOnDisk(
 
   writeJsonAtomic(path.join(sessionsDir, 'index.json'), currentIndex, false);
   return { ok: true, id: safeId, isPinned: nextPinned, summary: target };
+}
+
+// ─── Multi-Provider & Intermediate Executive Model Vault ───────────────────
+
+import {
+  ALL_PROVIDERS,
+  type IntermediateModelSettings,
+  type ProviderDefinition,
+  type ProviderStatusSummary,
+  type StoredProviderConfig,
+  type TestProviderResult,
+  type ThinkingLevel,
+} from '../types/providers.ts';
+
+export { ALL_PROVIDERS };
+export type {
+  IntermediateModelSettings,
+  ProviderDefinition,
+  ProviderStatusSummary,
+  StoredProviderConfig,
+  TestProviderResult,
+  ThinkingLevel,
+};
+
+function resolveModelEndpoint(def: ProviderDefinition, baseUrl: string, apiKey: string): string {
+  let cleanBase = (baseUrl || def.defaultBaseUrl || '').replace(/\/+$/, '');
+  if (def.id === 'gemini') {
+    if (cleanBase.includes('googleapis.com')) {
+      return `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=50`;
+    }
+  }
+  if (def.id === 'ollama' && !cleanBase.endsWith('/v1')) {
+    return `${cleanBase}/api/tags`;
+  }
+  if (cleanBase.endsWith('/models')) {
+    return cleanBase;
+  }
+  return `${cleanBase}/models`;
+}
+
+function extractModelsFromPayload(payload: any): Array<{ id: string; name?: string; description?: string }> {
+  if (!payload) return [];
+  const list: Array<{ id: string; name?: string; description?: string }> = [];
+
+  if (Array.isArray(payload.data)) {
+    for (const item of payload.data) {
+      const id = typeof item === 'string' ? item : item?.id;
+      if (id && typeof id === 'string') {
+        list.push({
+          id: id.trim(),
+          name: typeof item?.name === 'string' ? item.name.trim() : id.trim(),
+          description: typeof item?.description === 'string' ? item.description : undefined,
+        });
+      }
+    }
+    return list;
+  }
+
+  if (Array.isArray(payload.models)) {
+    for (const item of payload.models) {
+      if (typeof item === 'string') {
+        list.push({ id: item, name: item });
+      } else if (item && typeof item.name === 'string') {
+        const cleanId = item.name.replace(/^models\//, '');
+        list.push({
+          id: cleanId,
+          name: item.displayName || cleanId,
+          description: item.description,
+        });
+      } else if (item && typeof item.id === 'string') {
+        list.push({ id: item.id, name: item.name || item.id });
+      }
+    }
+    return list;
+  }
+
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const id = typeof item === 'string' ? item : item?.id || item?.name;
+      if (id && typeof id === 'string') {
+        list.push({ id: id.trim(), name: id.trim() });
+      }
+    }
+    return list;
+  }
+
+  return list;
+}
+
+export function listAllProviderStatuses(opts?: {
+  appDataDir?: string;
+  envVars?: Record<string, string | undefined>;
+}): ProviderStatusSummary[] {
+  const cfg = readAppConfig(opts?.appDataDir);
+  const providersMap = (cfg.providers || {}) as Record<string, StoredProviderConfig>;
+  const envMap = opts?.envVars || process.env;
+
+  return ALL_PROVIDERS.map((def) => {
+    const stored = providersMap[def.id] || {};
+    const envKey = def.envKeyName ? (envMap[def.envKeyName] || '').trim() : '';
+    const effectiveKey = (stored.apiKey || '').trim() || envKey;
+    const isConfigured = def.isLocal ? true : effectiveKey.length > 3;
+    const baseUrl = (stored.baseUrl || '').trim() || def.defaultBaseUrl || '';
+    const selectedModel = (stored.selectedModel || '').trim() || def.defaultModel || '';
+    const cachedModels = Array.isArray(stored.cachedModels) ? stored.cachedModels : [];
+    const thinkingLevel = stored.thinkingLevel || 'high';
+
+    return {
+      id: def.id,
+      name: def.name,
+      configured: isConfigured,
+      maskedKey: effectiveKey ? maskApiKey(effectiveKey) : null,
+      baseUrl,
+      selectedModel,
+      cachedModelsCount: cachedModels.length,
+      cachedModels,
+      thinkingLevel,
+      isLocal: Boolean(def.isLocal),
+      updatedAt: stored.updatedAt,
+      verifiedAt: stored.verifiedAt,
+    };
+  });
+}
+
+export function getProviderConfig(
+  providerId: string,
+  opts?: { appDataDir?: string; envVars?: Record<string, string | undefined> }
+): StoredProviderConfig & { effectiveApiKey: string; effectiveBaseUrl: string } {
+  const def = ALL_PROVIDERS.find((p) => p.id === providerId);
+  const cfg = readAppConfig(opts?.appDataDir);
+  const stored = ((cfg.providers || {})[providerId] || {}) as StoredProviderConfig;
+  const envMap = opts?.envVars || process.env;
+  const envKey = def?.envKeyName ? (envMap[def.envKeyName] || '').trim() : '';
+  const effectiveApiKey = (stored.apiKey || '').trim() || envKey;
+  const effectiveBaseUrl = (stored.baseUrl || '').trim() || def?.defaultBaseUrl || '';
+
+  return {
+    ...stored,
+    id: providerId,
+    effectiveApiKey,
+    effectiveBaseUrl,
+  };
+}
+
+export async function testProviderConnection(
+  providerId: string,
+  customKey?: string,
+  customBaseUrl?: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<TestProviderResult> {
+  const def = ALL_PROVIDERS.find((p) => p.id === providerId);
+  if (!def) {
+    return { valid: false, latencyMs: 0, error: `Unknown provider: ${providerId}` };
+  }
+
+  const start = performance.now();
+  const rawKey = (customKey !== undefined ? customKey : '').trim();
+  const rawBaseUrl = (customBaseUrl !== undefined ? customBaseUrl : def.defaultBaseUrl || '').trim();
+
+  if (!def.isLocal && !rawKey) {
+    return { valid: false, latencyMs: 0, error: 'Please enter an API key for this provider.' };
+  }
+
+  const endpoint = resolveModelEndpoint(def, rawBaseUrl, rawKey);
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+
+  if (rawKey) {
+    if (def.authHeaderType === 'api-key') {
+      headers['api-key'] = rawKey;
+    } else {
+      headers['Authorization'] = `Bearer ${rawKey}`;
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    let res: Response;
+    try {
+      res = await fetchImpl(endpoint, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (res.ok) {
+      const models = extractModelsFromPayload(data);
+      return {
+        valid: true,
+        latencyMs,
+        modelCount: models.length,
+        statusCode: res.status,
+        message: `Verified & active (${latencyMs}ms). Found ${models.length} live models.`,
+      };
+    }
+
+    const errMessage = data?.error?.message || data?.message || `HTTP ${res.status}: ${res.statusText}`;
+    return {
+      valid: false,
+      latencyMs,
+      statusCode: res.status,
+      errorCode: `HTTP_${res.status}`,
+      error: errMessage,
+    };
+  } catch (err: any) {
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    const isTimeout = err?.name === 'AbortError';
+    return {
+      valid: false,
+      latencyMs,
+      errorCode: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+      error: isTimeout
+        ? 'Connection timed out (12s). Verify URL and network connectivity.'
+        : `Network error: ${err?.message || 'Failed to reach provider endpoint'}`,
+    };
+  }
+}
+
+export async function fetchProviderModelsLive(
+  providerId: string,
+  customKey?: string,
+  customBaseUrl?: string,
+  opts?: { appDataDir?: string; fetchImpl?: typeof fetch }
+): Promise<{ ok: boolean; models: Array<{ id: string; name?: string }>; error?: string; latencyMs?: number }> {
+  const def = ALL_PROVIDERS.find((p) => p.id === providerId);
+  if (!def) {
+    return { ok: false, models: [], error: `Unknown provider: ${providerId}` };
+  }
+
+  const currentStored = getProviderConfig(providerId, { appDataDir: opts?.appDataDir });
+  const rawKey = (customKey !== undefined ? customKey : currentStored.effectiveApiKey || '').trim();
+  const rawBaseUrl = (customBaseUrl !== undefined ? customBaseUrl : currentStored.effectiveBaseUrl || def.defaultBaseUrl || '').trim();
+
+  if (!def.isLocal && !rawKey) {
+    return { ok: false, models: [], error: 'API key is required to refresh models.' };
+  }
+
+  const start = performance.now();
+  const endpoint = resolveModelEndpoint(def, rawBaseUrl, rawKey);
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+
+  if (rawKey) {
+    if (def.authHeaderType === 'api-key') {
+      headers['api-key'] = rawKey;
+    } else {
+      headers['Authorization'] = `Bearer ${rawKey}`;
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let res: Response;
+    try {
+      res = await (opts?.fetchImpl || fetch)(endpoint, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      const errMessage = data?.error?.message || data?.message || `HTTP ${res.status}: ${res.statusText}`;
+      return { ok: false, models: [], error: errMessage, latencyMs };
+    }
+
+    const models = extractModelsFromPayload(data);
+    models.sort((a, b) => a.id.localeCompare(b.id));
+
+    // Persist refreshed models to config.json cache
+    const cfgPath = path.join(getZyrenAppDataDir(opts?.appDataDir), 'config.json');
+    const cfg = readAppConfig(opts?.appDataDir);
+    const now = Date.now();
+    const prevProviders = cfg.providers || {};
+    const existing = prevProviders[providerId] || { id: providerId, configured: true };
+
+    prevProviders[providerId] = {
+      ...existing,
+      id: providerId,
+      apiKey: rawKey || existing.apiKey,
+      baseUrl: rawBaseUrl,
+      configured: def.isLocal ? true : Boolean(rawKey),
+      cachedModels: models,
+      updatedAt: now,
+      verifiedAt: now,
+    };
+
+    cfg.providers = prevProviders;
+    writeJsonAtomic(cfgPath, cfg, true);
+
+    return { ok: true, models, latencyMs };
+  } catch (err: any) {
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    return {
+      ok: false,
+      models: [],
+      latencyMs,
+      error: err?.message || 'Failed to fetch models from provider.',
+    };
+  }
+}
+
+export function saveProviderConfig(
+  providerId: string,
+  payload: {
+    apiKey?: string;
+    baseUrl?: string;
+    selectedModel?: string;
+    thinkingLevel?: ThinkingLevel;
+    cachedModels?: Array<{ id: string; name?: string }>;
+  },
+  opts?: { appDataDir?: string }
+): { ok: boolean; provider: ProviderStatusSummary } {
+  const def = ALL_PROVIDERS.find((p) => p.id === providerId);
+  if (!def) {
+    throw new Error(`Unknown provider: ${providerId}`);
+  }
+
+  const cfgPath = path.join(getZyrenAppDataDir(opts?.appDataDir), 'config.json');
+  const cfg = readAppConfig(opts?.appDataDir);
+  const now = Date.now();
+  const prevProviders = cfg.providers || {};
+  const existing = prevProviders[providerId] || { id: providerId, configured: false };
+
+  const cleanKey = payload.apiKey !== undefined ? payload.apiKey.trim() : existing.apiKey;
+  const cleanBaseUrl = payload.baseUrl !== undefined ? payload.baseUrl.trim() : existing.baseUrl;
+  const cleanSelectedModel = payload.selectedModel !== undefined ? payload.selectedModel.trim() : existing.selectedModel;
+  const cleanThinking = payload.thinkingLevel || existing.thinkingLevel || 'high';
+  const cleanCached = Array.isArray(payload.cachedModels) ? payload.cachedModels : existing.cachedModels;
+
+  const nextConfig: StoredProviderConfig = {
+    id: providerId,
+    apiKey: cleanKey,
+    baseUrl: cleanBaseUrl,
+    configured: def.isLocal ? true : Boolean(cleanKey && cleanKey.length > 3),
+    selectedModel: cleanSelectedModel,
+    thinkingLevel: cleanThinking,
+    cachedModels: cleanCached,
+    updatedAt: now,
+    verifiedAt: existing.verifiedAt || now,
+  };
+
+  prevProviders[providerId] = nextConfig;
+  cfg.providers = prevProviders;
+  writeJsonAtomic(cfgPath, cfg, true);
+
+  const effectiveKey = nextConfig.apiKey || '';
+  return {
+    ok: true,
+    provider: {
+      id: providerId,
+      name: def.name,
+      configured: nextConfig.configured,
+      maskedKey: effectiveKey ? maskApiKey(effectiveKey) : null,
+      baseUrl: nextConfig.baseUrl || def.defaultBaseUrl || '',
+      selectedModel: nextConfig.selectedModel || def.defaultModel || '',
+      cachedModelsCount: (nextConfig.cachedModels || []).length,
+      cachedModels: nextConfig.cachedModels || [],
+      thinkingLevel: nextConfig.thinkingLevel || 'high',
+      isLocal: Boolean(def.isLocal),
+      updatedAt: nextConfig.updatedAt,
+      verifiedAt: nextConfig.verifiedAt,
+    },
+  };
+}
+
+export function deleteProviderKey(
+  providerId: string,
+  opts?: { appDataDir?: string }
+): { ok: boolean; providerId: string } {
+  const cfgPath = path.join(getZyrenAppDataDir(opts?.appDataDir), 'config.json');
+  const cfg = readAppConfig(opts?.appDataDir);
+  if (cfg.providers && cfg.providers[providerId]) {
+    cfg.providers[providerId].apiKey = '';
+    cfg.providers[providerId].configured = false;
+    cfg.providers[providerId].updatedAt = Date.now();
+    writeJsonAtomic(cfgPath, cfg, true);
+  }
+  return { ok: true, providerId };
+}
+
+export function getIntermediateModelSettings(opts?: { appDataDir?: string }): IntermediateModelSettings {
+  const cfg = readAppConfig(opts?.appDataDir);
+  const stored = cfg.intermediateModel;
+  return {
+    enabled: Boolean(stored?.enabled),
+    providerId: stored?.providerId || 'nvidia_nim',
+    modelId: stored?.modelId || 'nvidia/nemotron-4-340b-instruct',
+    thinkingLevel: stored?.thinkingLevel || 'high',
+    customBaseUrl: stored?.customBaseUrl || '',
+    updatedAt: stored?.updatedAt,
+  };
+}
+
+export function saveIntermediateModelSettings(
+  settings: Partial<IntermediateModelSettings>,
+  opts?: { appDataDir?: string }
+): IntermediateModelSettings {
+  const cfgPath = path.join(getZyrenAppDataDir(opts?.appDataDir), 'config.json');
+  const cfg = readAppConfig(opts?.appDataDir);
+  const current = getIntermediateModelSettings(opts);
+  const now = Date.now();
+
+  const nextSettings: IntermediateModelSettings = {
+    enabled: settings.enabled !== undefined ? Boolean(settings.enabled) : current.enabled,
+    providerId: (settings.providerId || current.providerId || 'nvidia_nim').trim(),
+    modelId: (settings.modelId || current.modelId || 'nvidia/nemotron-4-340b-instruct').trim(),
+    thinkingLevel: settings.thinkingLevel || current.thinkingLevel || 'high',
+    customBaseUrl: settings.customBaseUrl !== undefined ? settings.customBaseUrl.trim() : current.customBaseUrl,
+    updatedAt: now,
+  };
+
+  cfg.intermediateModel = nextSettings;
+  writeJsonAtomic(cfgPath, cfg, true);
+  return nextSettings;
 }

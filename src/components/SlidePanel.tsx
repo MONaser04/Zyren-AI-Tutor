@@ -343,7 +343,7 @@ export function SlidePanel({
           }}
         >
           <button
-            onClick={onAddNewPage}
+            onClick={() => onAddNewPage()}
             style={{
               padding: '10px 14px',
               backgroundColor: '#4ECDC4',

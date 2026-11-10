@@ -134,4 +134,29 @@ describe('whiteboard session defaults', () => {
     expect(res.needsPan).toBe(true);
     expect(res.desiredPanX).toBeLessThan(0); // Panned left to bring rightward text into view
   });
+
+  it('never hides a new assistant turn inside an old assistant bubble above newer user messages', () => {
+    let state = reconcileLiveChatMessages([], {
+      id: 'GR_resp_1',
+      role: 'assistant',
+      text: 'تمام، نقلت لك تعريف الـ',
+      timestamp: 1000,
+    });
+    state = reconcileLiveChatMessages(state, {
+      id: 'GI_user_1',
+      role: 'user',
+      text: 'ممكن تعملي ديجرام من تحت لفوق',
+      timestamp: 2000,
+    });
+    state = reconcileLiveChatMessages(state, {
+      id: 'GR_resp_1',
+      role: 'assistant',
+      text: 'أكيد! هعملك دلوقتي ديجرام من تحت لفوق يوضح الفروع كلها.',
+      timestamp: 3000,
+    });
+
+    expect(state).toHaveLength(3);
+    expect(state[2].role).toBe('assistant');
+    expect(state[2].text).toContain('ديجرام من تحت لفوق');
+  });
 });

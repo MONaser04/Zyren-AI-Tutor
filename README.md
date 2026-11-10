@@ -2,9 +2,10 @@
 
 <div align="center">
 
-![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.2.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
+![ZYREN AI Tutor Banner](https://img.shields.io/badge/ZYREN_AI_Tutor-v2.5.0-6366F1?style=for-the-badge&logo=openai&logoColor=white)
 ![Build Passing](https://img.shields.io/badge/build-passing-10B981?style=for-the-badge&logo=githubactions&logoColor=white)
-![Tests Passing](https://img.shields.io/badge/tests-109%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
+![Tests Passing](https://img.shields.io/badge/tests-188%20passed-success?style=for-the-badge&logo=vitest&logoColor=white)
+![Providers](https://img.shields.io/badge/AI%20Providers-40%2B%20Models-8B5CF6?style=for-the-badge&logo=nvidia&logoColor=white)
 ![LiveKit WebRTC](https://img.shields.io/badge/LiveKit-WebRTC%20RTC-00D26A?style=for-the-badge&logo=livekit&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Gemini_Live-Multimodal%20Realtime-EA4335?style=for-the-badge&logo=google&logoColor=white)
 ![React 18](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=for-the-badge&logo=react&logoColor=black)
@@ -13,7 +14,7 @@
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 
 <p align="center">
-  <b>A state-of-the-art, real-time Socratic AI tutoring workstation combining bidirectional low-latency voice streaming, autonomous blackboard camera tracking, computer vision perception, multi-slide live thumbnails, deterministic multi-directional diagrams, vector Venn diagrams, interactive in-slide media with video inspection, and a cutting-edge 3D WebGL Marching Cubes geometry engine.</b>
+  <b>A state-of-the-art, real-time Socratic AI tutoring workstation combining bidirectional low-latency voice streaming, an Executive Model Hub supporting 40+ AI providers, multimodal instant quizzes, live web intelligence, synchronized YouTube co-learning, autonomous blackboard camera tracking, deterministic multi-directional diagrams, vector Venn diagrams, and a cutting-edge 3D WebGL Marching Cubes geometry engine.</b>
 </p>
 
 [Key Features](#-key-features) • [Architecture](#-system-architecture) • [3D & Geometry Engine](#-3d-mathematical-geometry-engine) • [Quick Start](#-quick-start) • [Configuration](#-configuration) • [Testing & Quality Assurance](#-testing--quality-assurance)
@@ -28,9 +29,12 @@
 
 Unlike conventional chatbots or disjointed speech interfaces, **AI Tutor** acts as a genuine classroom instructor standing in front of a digital blackboard:
 - **Speaks and Listens Simultaneously**: Full-duplex conversation with zero awkward pauses, immediate interruptibility, and 30 distinct vocal personas powered by Google Gemini Live Realtime.
+- **Decoupled Executive Model Hub (40+ Providers)**: Decouples streaming conversational voice latency from deep spatial/mathematical blackboard execution by dispatching complex diagram layouts, proofs, and grading to an Executive Intermediate Model (supporting NVIDIA NIM, OpenRouter, Groq, DeepSeek, xAI, Ollama, LM Studio, and more).
+- **Interactive Multimodal Instant Quizzes**: Tests student comprehension in real time across 6 formats (Multiple Choice, True/False, Matching Pairs, Fill in Blank, Step Ordering, Short Answer) responsive to touch/clicks, voice speech answers, handwriting, and freehand encircling gestures.
+- **Live Web Intelligence & Synchronized Video Co-Learning**: Real-time web fact search, instant whiteboard image placement, and programmatic YouTube video control (play, pause, seek) so the tutor pauses lectures at key timestamps to explain complex concepts synchronously.
 - **Autonomous Blackboard Camera Tracking**: Intelligently tracks the tutor's live handwriting, formulas, and diagrams, smoothly framing the active learning focal point without disrupting user zoom.
 - **Multimodal Video & Document Perception**: Sees student screen-shares, webcams, pasted assignment snapshots, high-resolution slide images, and HTML5 video lectures with frame-accurate timecode inspection.
-- **Dynamic Board Drawing & Auto-Layout**: Real-time chalk handwriting, step-by-step LaTeX formula typesetting, interactive 2D calculus curves with shaded definite integrals, multi-directional flowcharts (supporting ascending loops), vector Venn diagrams, and interactive 3D WebGL solids with orbit controls.
+- **Dynamic Board Drawing & Auto-Layout**: Real-time chalk handwriting, step-by-step LaTeX formula typesetting, interactive 2D calculus curves with shaded definite integrals, 4-directional hierarchical trees (TB, BT, LR, RL), vector Venn diagrams, and interactive 3D WebGL solids with orbit controls.
 - **Socratic Pedagogical Scaffolding**: Built around the Socratic method and cognitive code-switching — guiding students turn-by-turn with targeted micro-steps rather than handing out unearned answers.
 - **Multimodal Speech Stability Benchmark & Language Hierarchy**: Configure primary and ordered secondary languages with official Google Gemini Live acoustic stability calibration.
 
@@ -46,7 +50,9 @@ flowchart TB
         UI["Interactive Blackboard Canvas (1080p Virtual World)"]
         CamCtrl["CameraFollowController (Autonomous Blackboard Tracking)"]
         MediaLayer["SlideMediaOverlay (In-Slide Video Player & Audio Tap)"]
+        QuizLayer["QuizOverlay (6-Format Multimodal Quiz Engine & Gesture Parser)"]
         ThumbStrip["SlidePanel & SlideThumbnail (Live 16:9 Previews)"]
+        ProviderHub["ProvidersModal (40+ Model Orchestrator & Vault)"]
         GLOverlay["3D WebGL Card (Three.js + Marching Cubes)"]
         GraphOverlay["2D Calculus Engine (Area Shading & Function Plot)"]
         VennEngine["Vector Venn Overlay (SVG Boolean Masks)"]
@@ -68,21 +74,26 @@ flowchart TB
         ConfigStore["Persistent ConfigStore (agent_config.json)"]
         ToolExecutor["Atomic Whiteboard Tool Handlers"]
         GeminiWS["Google Gemini Live Realtime WebSocket Session"]
+        ExecutiveDisp["Executive Model Dispatcher (NVIDIA NIM, DeepSeek, Groq, Ollama)"]
+        InternetSvc["Internet Intelligence Service (DuckDuckGo & YouTube Engine)"]
     end
 
     Client <-->|"Audio I/O & In-Slide Video Audio Tap"| AudioTrack
     Client -->|"Video / Frame Capture (1 FPS Vision)"| VideoTrack
-    Client <-->|"Board State, Slide Deck, Tool Calls & Sync"| DataChannel
+    Client <-->|"Board State, Slide Deck, Quiz Responses & Sync"| DataChannel
 
     AudioTrack <-->|"Realtime Audio"| TutorCore
     VideoTrack -->|"Multimodal Vision"| TutorCore
     DataChannel <-->|"Tool Calls & Board Sync"| ToolExecutor
 
     TutorCore <-->|"Bidirectional Realtime Stream"| GeminiWS
+    ToolExecutor <-->|"Spatial Layout, Math & Quiz Grading"| ExecutiveDisp
+    ToolExecutor <-->|"Web Search & Video Transcripts"| InternetSvc
     ToolExecutor -->|"Scheduled Draw Commands (SILENT)"| DataChannel
     SyncEngine -->|"Render Operations"| UI
     SyncEngine -->|"Focal Point Tracking"| CamCtrl
     SyncEngine -->|"Media Playback & Inspection"| MediaLayer
+    SyncEngine -->|"Interactive Quiz Cards"| QuizLayer
     SyncEngine -->|"3D Meshes"| GLOverlay
     SyncEngine -->|"2D Curves & Shading"| GraphOverlay
     SyncEngine -->|"Venn Masks"| VennEngine
@@ -106,18 +117,38 @@ python main.py
 
 ## ✨ Key Features
 
-### 🎙️ 1. Ultra-Low Latency Conversational Voice & Extended Thinking
-- **Gemini Live Realtime Streaming**: Instant conversational turn-taking with sub-second response times.
-- **Dynamic Mid-Session Model Switcher**:
+### 🎙️ 1. Ultra-Low Latency Voice & Decoupled Executive Model Hub (40+ Providers)
+- **Gemini Live Realtime Streaming**: Instant conversational turn-taking with sub-second response times and full-duplex speech.
+- **Decoupled Spatial Dual-Engine Architecture**: Decouples voice latency from deep spatial/mathematical blackboard planning:
+  - *Streaming Conversational Voice*: Handled with sub-second latency by Google Gemini Live Realtime.
+  - *Executive Whiteboard Specialist (`ExecutiveModelDispatcher`)*: Dispatches complex multi-branch diagrams, mathematical proofs, and interactive quizzes to a dedicated reasoning model.
+- **Comprehensive 40+ Provider Matrix (`ProvidersModal`)**:
+  - **Enterprise Cloud Providers**: NVIDIA NIM (Nemotron-4, Llama 3.3, Mistral), OpenRouter, Groq (DeepSeek-R1, Llama 3.3 70B), xAI (Grok 2/3), DeepSeek Official API (R1 & V3), Azure OpenAI, Together AI, Mistral & Codestral, Cerebras (1000+ tok/s), SambaNova, Fireworks, Novita, Cloudflare Workers AI, and Google Vertex AI.
+  - **Local & Offline Inference**: Native zero-latency integration with local Ollama daemons, LM Studio, llama.cpp (`llama-server`), and any custom OpenAI-compatible proxy (`localhost:8000`).
+  - **In-App Provider Hub**: Real-time connection testing, latency benchmarking, dynamic model discovery (`/v1/models`), per-provider thinking depth controls, and secure local AppData vault storage.
+- **Mid-Session Gemini Model Switcher**:
   - `gemini-3.8-live-extended-thinking` (Configurable thinking levels: `minimal`, `low`, `medium`, `high`)
   - `gemini-3.8-live` (Ultra-low latency streaming voice & native tool execution)
   - `gemini-3.1-flash-live-preview` (Agile multimodal preview with thinking depth)
 - **Zero-Disconnection Voice Switching**: Audition and switch between **30 Gemini vocal personas** (Aoede, Puck, Charon, Kore, Fenrir, Zephyr, etc.) mid-call with instant audio preview playback and favorites filtering.
-- **Simultaneous Action & Speech Protocol**: Whiteboard tool calls are emitted concurrently at the exact first word of explanation; zero verbal filler promises (*"سأكتب ذلك على السبورة"*) and zero retroactive narrations (*"وها قد كتبتها"*).
-- **Learner & Tutor Name Personalization**: Configure your student name as well as a custom teacher name in the Persona settings (defaulting to **Zyren**). The AI Tutor adopts this identity when introducing itself and addresses you warmly by your student name. Stored strictly in local device storage (`localStorage`) with runtime WebRTC injection to preserve git privacy.
-- **Turn-0 Memory Reset**: Hard reset of Gemini Live WebSocket and agent memory without reloading the page.
+- **Learner & Tutor Name Personalization**: Configure student and teacher identities (defaulting to **Zyren**). The AI Tutor adopts this identity when introducing itself and addresses you warmly by your student name. Stored strictly in local device storage (`localStorage`) with runtime WebRTC injection to preserve git privacy.
 
-### 🌐 2. Multilingual Hierarchy & Speech Stability Benchmark
+### 🧩 2. Interactive Multimodal Instant Quizzes & Real-Time Assessment (`QuizOverlay`)
+- **6 Pedagogical Quiz Paradigms**:
+  - *Multiple Choice*: Single and multi-select structured question cards.
+  - *True / False*: Rapid concept verification with immediate explanation.
+  - *Pair Matching & Association*: Interactive left/right concept pairing (e.g. definitions to terms).
+  - *Fill in the Blank*: Interactive cloze tests with inline student text input.
+  - *Step Ordering*: Algorithmic and chronological sequence sorting.
+  - *Short Answer & Oral Socratic Dialogue*: Open-ended prompts with AI evaluation.
+- **4-Way Multimodal Response & Evaluation Modes**:
+  - *Direct Canvas Touch / Click*: Tap directly on quiz options, matching buttons, and ordering handles.
+  - *Verbal Voice Answers (`QuizSpeechParser`)*: Student answers aloud (*"The correct answer is Option A because..."*); Gemini Live and the speech parser extract and evaluate the response, rendering real-time green checkmarks on the canvas.
+  - *Freehand Circling Gesture Recognition*: Draw a loose loop or circle around any option on the board; the engine detects the enclosure and selects the choice.
+  - *Handwriting & Text*: Write or type answers directly on the whiteboard canvas.
+- **Instant Visual Feedback & Scoring**: Real-time scoring badges, Socratic explanatory hints, and retry capabilities.
+
+### 🌐 3. Multilingual Hierarchy & Speech Stability Benchmark
 - **Speech Language Priority Configuration (`LanguageSelectorModal`)**:
   - **Primary Conversational Language**: Select the base instructional language (Egyptian Arabic, Standard Arabic, English, German, French, Spanish, etc.).
   - **Secondary Languages Priority Hierarchy**: Add, remove, and reorder secondary languages (`Priority #1`, `Priority #2`, etc.) for terminology, definitions, and code-switching.
@@ -129,39 +160,48 @@ python main.py
 - **Single Exclusive Accessibility Lifeline**: If a student indicates they cannot understand the active language, the tutor replies with a single rescue sentence pointing to the 🌐 language button on the toolbar, then immediately resumes the active language with strict anti-jailbreak guardrails.
 - **Persistent Configuration Store (`agent/config_store.py`)**: Remembers language priorities, active model, vocal tone, verbosity, and learner profile across reboots.
 
-### 🎥 3. Autonomous Blackboard Camera Tracking & Adaptive Auto-Resize (`CameraFollowController`)
+### 🎬 4. Synchronized Video Co-Learning & Web Intelligence Suite
+- **Embedded YouTube & HTML5 Videos (`SlideMediaOverlay`)**: Embed YouTube videos or local HTML5 lectures directly onto whiteboard slides with timeline scrubbing, volume, speed, and Picture-in-Picture.
+- **Autonomous Video Player Control (`control_video`)**: The AI Tutor programmatically controls playback (`play`, `pause`, `seek_to`, `seek_relative`). The tutor can pause a lecture at a specific timestamp, illustrate the concept on the whiteboard, and resume playback seamlessly.
+- **Live Video Audio Tap**: WebAudio 16kHz PCM tap streams playing video audio directly to Gemini Live API so the tutor can listen and discuss recorded lectures.
+- **Deep Multimodal Inspection (`inspect_slide_media`)**: Autonomous tool allows the tutor to inspect specific slide media, examine small text/equations, and fetch video transcripts.
+- **Live Web Intelligence Suite (`internet_service.py`)**:
+  - *Live Web Search (`search_the_web`)*: DuckDuckGo real-time search for up-to-date facts, documentation, and scientific citations.
+  - *Web Image Placement (`search_and_display_web_image`)*: Live image discovery and automated placement on the active slide.
+  - *Internet Access Gating*: One-click toolbar toggle (`🌐 Web: ON/OFF`) to enable or restrict live web access.
+- **PointerCapture Overlay Precision**: Robust PointerCapture window dragging and resizing preventing mouse focus loss or dragging lockups.
+
+### 📑 5. Visual Slide Deck, Autonomous Navigation & Multi-Slide Memory
+- **Autonomous Slide Navigation (`switch_whiteboard_slide`)**: AI tutor can programmatically create, switch, and navigate whiteboard slides to organize multi-part lessons.
+- **Cross-Slide & Session Memory Recall (`recall_session_memory`)**: Contextual memory vault searches across previous slides and past sessions for deep conceptual continuity.
+- **Session Pinning & Eviction Immunity (📌)**: Pin essential study sessions to the top of the session manager in both IndexedDB and the AppData disk vault, immune to automatic LRU disk eviction.
+- **Context Grounding & Reconnection Resilience**: Automatically handles Google Gemini Live 9-minute `GoAway` reconnects by re-injecting slide state and grounding student text messages with active media and diagram context (`[CURRENT WHITEBOARD GROUNDING]`).
+- **Separate Chat & AI Memory Controls**: Clear chat history (`🧹 Clear Chat`) without losing tutor context, or perform a hard Turn-0 memory reset (`🔄 Reset AI`).
+- **Multi-Format Export**: Export entire lessons to multi-page **PDF** or high-resolution **PNG**.
+
+### 📊 6. Deterministic Tree Diagram Engine 2.0 & High-DPI Typography
+- **`DiagramLayoutEngine 2.0` & `TreeDiagramModel`**:
+  - Deterministic auto-layout for concept maps, taxonomy trees, hierarchical flowcharts, and comparison boards.
+  - **4-Way Multi-Directional Trees**: Full support for Top-to-Bottom (`TB`), Bottom-to-Top (`BT` - upward trees / foundation-to-peak architectures), Left-to-Right (`LR`), and Right-to-Left (`RL`).
+  - **Continuous Subtree Append (`attachToNode`)**: Attaches new branches or step sequences to existing nodes without duplicating or clearing previous work.
+  - **Atomic Integrated Diagram Titling**: Integrates topic headers directly into the diagram bounding box, eliminating orphan text elements.
+  - 90° orthogonal elbow connectors eliminating crossing diagonal lines.
+- **High-DPI Canvas Zoom Sharpness (`CanvasLayer` & `RoughJsAdapter`)**:
+  - Canvas resolution dynamically scales with user zoom level (with 60 FPS debounced gestures), rendering razor-sharp lines and text even at 400%+ zoom.
+- **Dynamic Font Size & Surgical Resizing**:
+  - Supports custom font sizes (12px to 80px) and live item updates (`update_whiteboard_item`) across handwriting, normal text, and mathematical formulas.
+- **Canvas Markdown Typography**:
+  - Tokenized parsing of bold (`**text**`), italic/notes (`*text*`), subheaders with colons, and bullet normalization.
+- **Sequential 2-Column Layout with Widow Heading Prevention (`CollisionDetector.ts`)**:
+  - Strict two-column gravity flow (Column 1 = 150px, Column 2 = 1000px) with contextual lookahead buffer.
+
+### 🎥 7. Autonomous Blackboard Camera Tracking & Adaptive Auto-Resize (`CameraFollowController`)
 - **Smart Focal Point Navigation**: Automatically pans the viewport to follow where the AI Tutor writes on the 1920x1080 canvas.
 - **Adaptive Auto-Resize & Auto-Framing (Auto-Fit)**: Dynamically evaluates the bounding box of active multi-node diagrams, multi-column layouts, and wide formulas. If the structure exceeds the safe viewing zone, the camera smoothly and adaptively adjusts both zoom and pan simultaneously so the entire structure fits comfortably on screen without manual zooming.
 - **Deadzone-Aware Smooth Framing**: Evaluates a comfortable viewing deadzone ratio (68%) with frame-rate independent exponential LERP decay for jitter-free cinematic motion.
 - **Manual Override Freedom**: Student can pan and zoom freely using mouse, touchpad, or touch gestures; auto-follow and auto-resize smoothly yield to user interaction with an automatic cooldown timer.
 
-### 🎬 4. In-Slide Media Studio & Multimodal Deep Perception (`SlideMediaOverlay`)
-- **Embedded Slide Images & Videos**: Drag-and-drop or paste images and HTML5 videos directly onto whiteboard slides.
-- **Interactive Player Controls**: Timeline scrubbing, play/pause, volume, speed, and frame-stepping directly on the board.
-- **Live Video Audio Tap**: WebAudio 16kHz PCM tap streams playing video audio directly to Gemini Live API so the tutor can listen and discuss recorded lectures.
-- **Deep Multimodal Inspection (`inspect_slide_media`)**: Autonomous tool allows the tutor to inspect specific slide media, examine small text/equations, and analyze video timeline timestamps (MM:SS).
-
-### 📑 5. Visual Slide Deck, Continuous Auto-Save & Session Pinning
-- **Session Pinning & Eviction Immunity (📌)**: Pin essential study sessions to the top of the session manager in both IndexedDB and the AppData disk vault. Pinned sessions are 100% immune to automatic LRU disk eviction and display an amber golden badge.
-- **Live 16:9 Thumbnail Strip (`SlidePanel` & `SlideThumbnail`)**: Miniature real-time canvas renderers showing exact shapes, KaTeX equations, and handwriting per slide.
-- **Local AppData Backend Vault (`zyrenBackendVault.ts`)**: Cross-platform atomic JSON persistence (`%APPDATA%/ZYREN_AI_Tutor` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux).
-- **Dual IndexedDB + Disk Auto-Save (`sessionAutoSave.ts`)**: Continuous auto-save with live status pill (`✓ Auto-saved`), automatic derivation of smart session titles, and session history manager.
-- **Multi-Format Export**: Export entire lessons to multi-page **PDF** or high-resolution **PNG**.
-
-### 📊 6. Deterministic Diagram Engine 2.0 & Canvas Typography
-- **`DiagramLayoutEngine 2.0`**:
-  - Deterministic auto-layout for concept maps, taxonomy trees, hierarchical flowcharts, and comparison boards.
-  - **Multi-Directional Flow**: Step nodes support `flow: 'right'`, `'down'`, `'left'`, and ascending `'up'` (enabling return loops and upward cycles).
-  - **Continuous Append Mode**: Seamlessly attaches new step sequences to existing whiteboard nodes (`attachToNode`) with localized collision-free slot allocation.
-  - 90° orthogonal elbow connectors eliminating crossing diagonal lines.
-- **Canvas Markdown Typography (`RoughJsAdapter.ts`)**:
-  - Tokenized parsing of bold (`**text**`), italic/notes (`*text*`), subheaders with colons, and bullet normalization.
-  - Zero raw formatting delimiters (`**`, `*`) leaking onto the canvas.
-- **Sequential 2-Column Layout with Widow Heading Prevention (`CollisionDetector.ts`)**:
-  - Strict two-column gravity flow (Column 1 = 150px, Column 2 = 1000px).
-  - Contextual lookahead buffer preventing single-line headings from being orphaned at the bottom of a column.
-
-### 📐 7. Smart 3D WebGL Mathematical Geometry Engine
+### 📐 8. Smart 3D WebGL Mathematical Geometry Engine
 - **Marching Cubes Volumetric Meshing**: Real-time rendering of implicit quadric surfaces and CSG intersections (e.g. $9 \le x^2 + y^2 + z^2 \le 16$, Steinmetz solids, ellipsoids, hyperboloids).
 - **Feature-Preserving Meshing**: Exact sub-voxel zero-crossing root finding and QEF singularity resolution to eliminate floating artifacts and ghost blobs.
 - **Parametric Manifolds**: Vector manifold builders for Möbius strips, Toruses, Trefoil knots, and Klein bottles.
@@ -169,7 +209,7 @@ python main.py
 - **Watertight Clipping Planes**: Real-time cross-section slicing ($x \ge 0, z \le 2$).
 - **Isolated 3D OrbitControls**: Pan, rotate, and zoom 3D graphs directly inside their whiteboard cards without disrupting canvas navigation.
 
-### 📈 8. Calculus 2D Graphing with Area Shading & Vector Venn Diagrams
+### 📈 9. Calculus 2D Graphing with Area Shading & Vector Venn Diagrams
 - **2D Calculus Engine**: Interactive Cartesian coordinate system with auto-scaling bounds, definite integral area shading between $f_{\text{top}}(x)$ and $f_{\text{bottom}}(x)$ over $[a, b]$, and Gaussian probability density curves.
 - **Vector Venn Diagrams**: High-precision 2-set and 3-set Venn diagrams rendered with native SVG Boolean masking (`<clipPath>`, `<mask />`) and exact geometric centroid label placement.
 
@@ -182,6 +222,8 @@ AI_Tutor/
 ├── agent/                          # Python AI Tutor Voice Agent & Worker
 │   ├── agent.py                    # TutorAgent class, tools & Gemini Live integration
 │   ├── config_store.py             # Persistent configuration store (agent_config.json)
+│   ├── executive_model.py          # Decoupled Executive Model Dispatcher (40+ AI providers)
+│   ├── internet_service.py         # Live DuckDuckGo search, image lookup & YouTube intelligence
 │   ├── requirements.txt            # Python dependencies (livekit-agents, google-genai, etc.)
 │   └── venv/                       # (Git-ignored) Virtual environment
 ├── livekit_server/                 # Pre-compiled LiveKit WebRTC Server
@@ -195,7 +237,7 @@ AI_Tutor/
 │   └── run.bat                     # Quick launch batch script
 ├── src/                            # Frontend React 18 + TypeScript Application
 │   ├── adapters/                   # Architectural abstraction layers
-│   │   ├── canvas/                 # RoughJsAdapter (2D canvas & markdown typography)
+│   │   ├── canvas/                 # RoughJsAdapter (High-DPI canvas & markdown typography)
 │   │   ├── llm/                    # Gemini adapter interfaces
 │   │   └── tts/                    # ElevenLabs & TTS preview adapters
 │   ├── components/                 # React UI components
@@ -206,6 +248,7 @@ AI_Tutor/
 │   │   ├── LanguageSelectorModal.tsx# Multilingual hierarchy & stability benchmark modal
 │   │   ├── ModelSelectorModal.tsx  # Dynamic Gemini Live model & thinking level modal
 │   │   ├── PersonaSelectorModal.tsx# Verbosity, vocal tone & learner profile modal
+│   │   ├── ProvidersModal.tsx      # 40+ AI model orchestrator, API key vault & latency benchmark
 │   │   ├── SlidePanel.tsx          # PowerPoint-style slide sorter drawer
 │   │   ├── SlideThumbnail.tsx      # Live 16:9 miniature canvas thumbnail renderer
 │   │   ├── ThreeGraph3DCard.tsx    # 3D Three.js card with isolated OrbitControls
@@ -219,15 +262,18 @@ AI_Tutor/
 │   │   ├── DiagramLayoutEngine.ts  # Deterministic multi-directional diagram auto-layout
 │   │   ├── DriftCorrector.ts       # Audio-visual synchronization drift compensator
 │   │   ├── InterruptionHandler.ts  # Millisecond vocal interruption recovery
+│   │   ├── QuizSpeechParser.ts     # Spoken verbal answer parser & semantic matching
 │   │   ├── SyncEngine.ts           # Master render dispatcher & undo/redo stack
-│   │   └── SyncQueue.ts            # Priority command queue
+│   │   ├── SyncQueue.ts            # Priority command queue
+│   │   └── TreeDiagramModel.ts     # Canonical recursive tree model & 4-way layout normalization
 │   ├── layers/                     # Canvas visual overlays
 │   │   ├── ArabicShaper.ts         # RTL Arabic text shaping & glyph normalization
-│   │   ├── CanvasLayer.tsx         # Rough.js sketchy blackboard drawings
+│   │   ├── CanvasLayer.tsx         # Rough.js sketchy blackboard drawings with High-DPI scaling
 │   │   ├── Graph3DOverlay.tsx      # 3D WebGL container overlay
 │   │   ├── GraphOverlay.tsx        # 2D coordinate graphs & calculus area shading
 │   │   ├── MathOverlay.tsx         # KaTeX LaTeX formula renderer
-│   │   ├── SlideMediaOverlay.tsx   # In-slide interactive HTML5 video & image player
+│   │   ├── QuizOverlay.tsx         # Interactive multimodal 6-format quiz card engine
+│   │   ├── SlideMediaOverlay.tsx   # In-slide interactive HTML5/YouTube video player & audio tap
 │   │   ├── SVGOverlay.tsx          # Stroke-by-stroke animated handwriting
 │   │   └── VennOverlay.tsx         # Vector SVG boolean mask Venn diagram engine
 │   ├── math3d/                     # Mathematical 3D geometry engine
@@ -246,24 +292,34 @@ AI_Tutor/
 │   ├── store/                      # Zustand state store
 │   ├── transport/                  # LiveKit WebRTC client & DataChannel protocol
 │   ├── types/                      # Shared TypeScript type definitions
+│   │   ├── index.ts                # Core domain types, whiteboard & quiz interfaces
+│   │   └── providers.ts            # Multi-provider definitions, settings & status contracts
 │   ├── App.tsx                     # Top-level React entrypoint & token lifecycle
 │   ├── index.css                   # Global blackboard styling & Tailwind classes
 │   └── main.tsx                    # React DOM root
-├── tests/                          # Automated test suites (101 passing tests)
-│   ├── agent/                      # Pytest backend agent tests (24 tests)
+├── tests/                          # Automated test suites (188 passing tests)
+│   ├── agent/                      # Pytest backend agent tests (60 tests)
 │   │   ├── test_agent.py           # Agent async tool execution
 │   │   ├── test_config_store.py    # Persistent JSON configuration store
+│   │   ├── test_ext_thinking_auto_heal.py # Extended thinking recovery & watchdog
+│   │   ├── test_intermediate_executive.py # Executive model dispatcher & 40+ providers
+│   │   ├── test_internet_and_youtube.py # Web search, image embedding & YouTube analysis
 │   │   ├── test_language_config.py # Multilingual hierarchy & accessibility rescue
 │   │   ├── test_media_and_extended_thinking.py # Slide media perception & thinking locks
 │   │   ├── test_mlf_instructions.py# Multilingual matrix prompt validation
-│   │   └── test_problem7_fixes.py  # Upward diagram flow & speech-action synchronization
-│   └── unit/                       # Vitest frontend unit tests (77 tests)
-│       ├── diagram_layout.test.ts  # Multi-directional diagrams & append layout (29 tests)
-│       ├── graph_shading.test.ts   # 2D calculus area shading test suite (5 tests)
-│       ├── new_features.test.ts    # Slide thumbnails, auto-save & media hooks (9 tests)
+│   │   ├── test_problem7_fixes.py  # Upward diagram flow & speech-action synchronization
+│   │   ├── test_quiz_feature.py    # Interactive quiz tool & normalization suite
+│   │   ├── test_slide_navigation_and_memory.py # Autonomous slide switching & memory vault
+│   │   └── test_video_control.py   # Synchronized video playback control suite
+│   └── unit/                       # Vitest frontend unit tests (128 tests)
+│       ├── diagram_layout.test.ts  # Multi-directional diagrams & append layout (45 tests)
 │       ├── expressionGuard.test.ts # AST math expression safety & validation (12 tests)
+│       ├── graph_shading.test.ts   # 2D calculus area shading test suite (5 tests)
+│       ├── new_features.test.ts    # Slide thumbnails, auto-save & media hooks (15 tests)
+│       ├── quiz_overlay.test.ts    # Multimodal quiz interaction & gesture suite (20 tests)
 │       ├── venn_diagram.test.ts    # VennOverlay boolean masking test suite (14 tests)
-│       └── whiteboard_session.test.ts # Session state & serialization test suite (8 tests)
+│       ├── video_control.test.ts   # Video player control & synchronization suite (8 tests)
+│       └── whiteboard_session.test.ts # Session state & serialization test suite (9 tests)
 ├── .env.example                    # Environment configuration template
 ├── .gitignore                      # Git exclusion rules
 ├── index.html                      # HTML template
@@ -360,41 +416,48 @@ To run on a tablet, iPad, or mobile phone on the same Wi-Fi network, access the 
 
 ## 🧪 Testing & Quality Assurance
 
-AI Tutor enforces strict quality assurance with **109 automated passing tests** across both frontend and backend layers:
+AI Tutor enforces strict quality assurance with **188 automated passing tests** across both frontend and backend layers:
 
-### 1. Frontend Test Suite (Vitest — 83 Tests)
-Executes 83 unit tests validating multi-directional diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
+### 1. Frontend Test Suite (Vitest — 128 Tests)
+Executes 128 unit tests validating interactive quiz interactions and speech parsing, synchronized video playback controls, multi-directional 4-way diagram layouts, adaptive auto-resize transforms, session pinning, SVG Venn masks, 2D calculus area shading, slide thumbnail generation, session persistence, and AST math expression safety:
 ```bash
 npm test
 ```
 ```
- ✓ tests/unit/diagram_layout.test.ts (29 tests)
+ ✓ tests/unit/quiz_overlay.test.ts (20 tests)
+ ✓ tests/unit/whiteboard_session.test.ts (9 tests)
+ ✓ tests/unit/video_control.test.ts (8 tests)
  ✓ tests/unit/venn_diagram.test.ts (14 tests)
- ✓ tests/unit/new_features.test.ts (13 tests)
- ✓ tests/unit/expressionGuard.test.ts (12 tests)
- ✓ tests/unit/whiteboard_session.test.ts (8 tests)
+ ✓ tests/unit/diagram_layout.test.ts (45 tests)
+ ✓ tests/unit/new_features.test.ts (15 tests)
  ✓ tests/unit/graph_shading.test.ts (5 tests)
+ ✓ src/math3d/expressionGuard.test.ts (12 tests)
 
- Test Files  6 passed (6)
-      Tests  83 passed (83)
+ Test Files  8 passed (8)
+      Tests  128 passed (128)
 ```
 
-### 2. Backend Agent Test Suite (Pytest — 26 Tests)
-Validates asynchronous tool calls, persistent JSON config stores, student name personalization without git leaks, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
+### 2. Backend Agent Test Suite (Pytest — 60 Tests)
+Validates asynchronous tool calls, Executive Model dispatching across 40+ providers, thinking mode parameter normalization, DuckDuckGo web search, YouTube transcript analysis, interactive quiz payload creation, autonomous slide navigation, memory recall, persistent JSON config stores, student and tutor name personalization without git leaks, language hierarchy and accessibility lifelines, slide media perception, and upward diagram flow:
 ```bash
 # In active Python virtual environment:
-pytest tests/agent/
+pytest tests/agent/ -v
 ```
 ```
-collected 26 items
-tests/agent/test_agent.py .                                              [  4%]
-tests/agent/test_config_store.py ..                                      [ 12%]
-tests/agent/test_language_config.py .........                            [ 48%]
-tests/agent/test_media_and_extended_thinking.py ....                     [ 64%]
-tests/agent/test_mlf_instructions.py .                                   [ 68%]
-tests/agent/test_problem7_fixes.py ........                              [100%]
+tests/agent/test_agent.py .                                              [  1%]
+tests/agent/test_config_store.py ..                                      [  5%]
+tests/agent/test_ext_thinking_auto_heal.py ...                           [ 10%]
+tests/agent/test_intermediate_executive.py .........                     [ 25%]
+tests/agent/test_internet_and_youtube.py ......                          [ 35%]
+tests/agent/test_language_config.py .........                            [ 50%]
+tests/agent/test_media_and_extended_thinking.py ....                     [ 56%]
+tests/agent/test_mlf_instructions.py .                                   [ 58%]
+tests/agent/test_problem7_fixes.py ...........                           [ 75%]
+tests/agent/test_quiz_feature.py ...........                             [ 91%]
+tests/agent/test_slide_navigation_and_memory.py ...                      [ 96%]
+tests/agent/test_video_control.py ..                                     [100%]
 
-============================= 26 passed in 6.85s =============================
+============================= 60 passed in 7.30s =============================
 ```
 
 ### 3. Frontend Production Build Check

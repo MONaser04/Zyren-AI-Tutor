@@ -112,6 +112,60 @@ class Colors:
 
 ROOT_DIR = Path(__file__).resolve().parent
 
+# Self-elevate to virtual environment python if available and not already in it
+_venv_py = ROOT_DIR / "agent" / "venv" / "Scripts" / "python.exe" if platform.system() == "Windows" else ROOT_DIR / "agent" / "venv" / "bin" / "python"
+if _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+    if not os.environ.get("_ZYREN_ELEVATED"):
+        _env = os.environ.copy()
+        _env["_ZYREN_ELEVATED"] = "1"
+        try:
+            sys.exit(subprocess.call([str(_venv_py)] + sys.argv, env=_env))
+        except Exception:
+            pass
+
+# Native Single-Instance Mutex (zero port conflicts, robust Windows/Unix support)
+_session_mutex_handle = None
+
+def check_and_handle_existing_session() -> bool:
+    """
+    Checks if another instance is active.
+    If detected, prompts user whether to restart fresh or keep running the existing one.
+    Returns True to proceed with launch, False to exit.
+    """
+    global _session_mutex_handle
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            mutex_name = "ZYREN_AI_TUTOR_SESSION_MUTEX"
+            _session_mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+            last_err = kernel32.GetLastError()
+            if last_err == 183:  # ERROR_ALREADY_EXISTS
+                print(f"\n{Colors.YELLOW}{Colors.BOLD}[NOTICE] An existing ZYREN AI Tutor session is already active.{Colors.RESET}")
+                print(f"{Colors.CYAN}What would you like to do?{Colors.RESET}")
+                print(f"  [1] Restart fresh session (Terminates previous and starts clean) {Colors.GREEN}[Recommended / Default]{Colors.RESET}")
+                print(f"  [2] Keep running existing session (Exit launcher)\n")
+                try:
+                    choice = input(f"{Colors.BOLD}Enter choice [1/2] (Press Enter for 1): {Colors.RESET}").strip().lower()
+                except Exception:
+                    choice = "1"
+
+                if choice in ("2", "keep", "k"):
+                    print(f"\n{Colors.GREEN}[INFO] Keeping existing session. Exiting launcher.{Colors.RESET}\n")
+                    return False
+
+                # Option 1: Clean restart
+                print(f"\n{Colors.YELLOW}[INFO] Terminating previous session to start fresh clean...{Colors.RESET}")
+                cleanup_orphaned_processes()
+                time.sleep(0.6)
+                if _session_mutex_handle:
+                    kernel32.CloseHandle(_session_mutex_handle)
+                _session_mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+                return True
+        except Exception:
+            return True
+    return True
+
 PROCESSES = []
 
 SHUTTING_DOWN = False
@@ -176,6 +230,30 @@ def cleanup_orphaned_processes():
             check=False
 
         )
+
+        # Native PowerShell cleanup: terminates lingering agent.py and node/vite processes, and frees ports 5173-5176 & 7880
+        try:
+            my_pid = os.getpid()
+            ps_script = (
+                f"$myPid = {my_pid}; "
+                f"Get-CimInstance Win32_Process | Where-Object {{ "
+                f"  ($_.CommandLine -like '*agent.py*' -and $_.ProcessId -ne $myPid) -or "
+                f"  ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*vite*' -or $_.CommandLine -like '*AI Tutor*')) "
+                f"}} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; "
+                f"Get-NetTCPConnection -LocalPort 5173,5174,5175,5176,7880 -ErrorAction SilentlyContinue | "
+                f"Select-Object -ExpandProperty OwningProcess -Unique | "
+                f"Where-Object {{ $_ -gt 4 -and $_ -ne $myPid }} | "
+                f"ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5.0
+            )
+        except Exception:
+            pass
 
         try:
 
@@ -416,6 +494,14 @@ def shutdown(signum=None, frame=None):
     cleanup_orphaned_processes()
 
             
+    global _session_mutex_handle
+    if _session_mutex_handle and platform.system() == "Windows":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(_session_mutex_handle)
+            _session_mutex_handle = None
+        except Exception:
+            pass
     log("MAIN", Colors.GREEN, "All services stopped cleanly. Goodbye!")
 
     print("=" * 60 + "\n")
@@ -529,6 +615,9 @@ def open_app_window(url: str):
 def main():
 
     """Main launcher execution routine."""
+
+    if not check_and_handle_existing_session():
+        sys.exit(0)
 
     no_browser = "--no-browser" in sys.argv
 
@@ -902,7 +991,53 @@ def main():
 
                     log("ERROR", Colors.RED, f"{name} exited unexpectedly with code {code}.")
 
-                    if name == "Voice Agent":
+                    if name == "LiveKit Server":
+
+
+                        log("RESTART", Colors.CYAN, f"Restarting {name}...")
+
+
+                        new_lk_proc = subprocess.Popen(
+
+
+                            lk_cmd,
+
+
+                            cwd=str(ROOT_DIR),
+
+
+                            stdout=subprocess.PIPE,
+
+
+                            stderr=subprocess.STDOUT,
+
+
+                            text=True,
+
+
+                            encoding="utf-8",
+
+
+                            errors="replace",
+
+
+                            bufsize=1,
+
+
+                            env=sub_env
+
+
+                        )
+
+
+                        PROCESSES[i] = ("LiveKit Server", new_lk_proc)
+
+
+                        threading.Thread(target=stream_process_output, args=(new_lk_proc, "LIVEKIT", Colors.CYAN), daemon=True).start()
+
+
+                    elif name == "Voice Agent":
+
 
                         log("RESTART", Colors.MAGENTA, f"Restarting {name} to apply new voice/settings...")
 

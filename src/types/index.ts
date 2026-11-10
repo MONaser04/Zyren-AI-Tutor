@@ -100,9 +100,61 @@ export interface VennOptions {
   colorTheme?: 'cyan_orange' | 'plasma' | 'emerald' | 'sunset';
 }
 
+export type QuizType =
+  | 'multiple_choice'
+  | 'true_false'
+  | 'matching'
+  | 'fill_in_the_blank'
+  | 'ordering'
+  | 'short_answer';
+
+export interface QuizOption {
+  id: string;
+  label?: string;
+  text: string;
+  isCorrect?: boolean;
+  order?: number;
+}
+
+export interface QuizPair {
+  leftId: string;
+  leftText: string;
+  rightId: string;
+  rightText: string;
+}
+
+export interface QuizOptions {
+  id?: string;
+  quizId?: string;
+  quizType: QuizType;
+  question: string;
+  options?: QuizOption[];
+  pairs?: QuizPair[];
+  blankSentence?: string;
+  acceptedAnswers?: string[];
+  explanation?: string;
+  correctOption?: string;
+  correctAnswer?: string;
+  colorTheme?: 'cyan' | 'purple' | 'amber' | 'emerald';
+  position?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center';
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  status?: 'active' | 'evaluating' | 'correct' | 'incorrect' | 'revealed';
+  selectedOptionId?: string | string[];
+  userMatches?: Record<string, string>;
+  userTextAnswer?: string;
+  userOrdering?: string[];
+  aiFeedback?: string;
+  score?: number;
+}
+
 export interface DiagramNode {
   id?: string;
-  label: string;
+  label?: string;
+  text?: string;
+  name?: string;
   parentId?: string;
   parent?: string;
   items?: string[];
@@ -118,7 +170,7 @@ export interface DiagramOptions {
   nodes?: DiagramNode[];
   items?: string[];
   category?: string;
-  direction?: 'TB' | 'LR' | string;
+  direction?: 'TB' | 'BT' | 'LR' | 'RL' | string;
   position?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center' | 'custom';
   x?: number;
   y?: number;
@@ -130,6 +182,66 @@ export interface DiagramOptions {
   color?: string;
   writingStyle?: 'handwriting' | 'normal' | 'mixed' | string;
   preserveExactPosition?: boolean;
+  /**
+   * Preserves the exact horizontal center and top Y anchor when an existing diagram
+   * is updated or expanded in place so it never jumps to another column or corner.
+   */
+  inPlaceAnchor?: {
+    centerX: number;
+    topY: number;
+    minX?: number;
+    maxX?: number;
+  };
+  /**
+   * Pre-resolved hierarchical tree model. When present, the tree generator lays it out
+   * directly (no root/label heuristics). Used by the SyncEngine when an existing tree
+   * diagram is extended in place.
+   */
+  treeModel?: TreeModelNode;
+}
+
+export interface UpdateItemPayload {
+  target: string;
+  action?:
+    | 'replace'
+    | 'edit'
+    | 'rename'
+    | 'replace_substring'
+    | 'append'
+    | 'move'
+    | 'change_direction'
+    | 'delete_node'
+    | 'delete_bullet'
+    | 'set_items'
+    | 'add_child';
+  newText?: string;
+  oldSubstring?: string;
+  replaceSubstring?: string;
+  withText?: string;
+  appendText?: string;
+  newItems?: string[];
+  newChildren?: DiagramNode[];
+  newDirection?: 'TB' | 'BT' | 'LR' | 'RL' | string;
+  newPosition?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center' | 'custom';
+  x?: number;
+  y?: number;
+  newX?: number;
+  newY?: number;
+  color?: string;
+  newColor?: string;
+  fontSize?: number;
+}
+
+/**
+ * Canonical recursive model of a concept tree. Every node is drawn as a box; `items`
+ * are bullet notes rendered beneath the node's box; `children` are child boxes linked
+ * by connector arrows.
+ */
+export interface TreeModelNode {
+  label: string;
+  items: string[];
+  children: TreeModelNode[];
+  color?: string;
 }
 
 export interface SlideMediaOptions {
@@ -148,7 +260,7 @@ export interface SlideMediaOptions {
 export interface ShapePayload {
   id?: string;
   kind: 'shape';
-  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram' | 'image' | 'video';
+  shapeType: 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'math' | 'graph' | 'graph3d' | 'venn' | 'diagram' | 'image' | 'video' | 'quiz';
   x: number;
   y: number;
   width?: number;
@@ -333,3 +445,5 @@ export interface SyncTelemetry {
   interruptionCount: number;
   state: WhiteboardState;
 }
+
+export * from './providers';

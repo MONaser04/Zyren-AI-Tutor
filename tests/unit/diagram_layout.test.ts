@@ -880,7 +880,7 @@ describe('DiagramLayoutEngine — Deterministic Diagram & Layout Solver', () => 
       expect(freePos.y).toBeLessThanOrEqual(200);
     });
 
-    it('Scenario 3: Concept card renders bullet items when options.items is passed without child nodes', () => {
+    it('Scenario 3: Concept card renders title above divider and bullet items below, without centered box label', () => {
       const cardShapes = DiagramLayoutEngine.generateShapes({
         diagramType: 'concept_card',
         title: 'Real-World Examples',
@@ -893,12 +893,71 @@ describe('DiagramLayoutEngine — Deterministic Diagram & Layout Solver', () => 
 
       const rootRect = cardShapes.find((s) => s.shapeType === 'rectangle');
       expect(rootRect).toBeDefined();
+      expect(rootRect!.options?.label).toBeUndefined();
 
-      const bulletTexts = cardShapes.filter((s) => s.shapeType === 'text');
+      const textShapes = cardShapes.filter((s) => s.shapeType === 'text');
+      expect(textShapes.length).toBe(4);
+      const titleShape = textShapes.find((s) => s.options?.text === 'Real-World Examples');
+      expect(titleShape).toBeDefined();
+
+      const dividerShape = cardShapes.find((s) => s.shapeType === 'line');
+      expect(dividerShape).toBeDefined();
+      expect(titleShape!.y).toBeLessThan(dividerShape!.y);
+
+      const bulletTexts = textShapes.filter((s) => s !== titleShape);
       expect(bulletTexts.length).toBe(3);
       expect(bulletTexts[0].options?.text).toContain('Supervised:');
+      expect(bulletTexts[0].y).toBeGreaterThan(dividerShape!.y);
       expect(bulletTexts[1].options?.text).toContain('Unsupervised:');
       expect(bulletTexts[2].options?.text).toContain('Reinforcement:');
+    });
+
+    it('Scenario 3b: Concept card automatically slots into non-overlapping free column beside existing notes', () => {
+      // Existing notes in Column 1 (left side)
+      const existingLeftNotes: any[] = [
+        {
+          kind: 'shape',
+          shapeType: 'text',
+          x: 140,
+          y: 180,
+          width: 500,
+          height: 200,
+          options: { text: 'Supervised Learning Notes...' },
+        },
+        {
+          kind: 'shape',
+          shapeType: 'text',
+          x: 140,
+          y: 420,
+          width: 500,
+          height: 250,
+          options: { text: 'More details down to y=670...' },
+        },
+      ];
+
+      const cardShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'concept_card',
+        title: 'Supervised Learning Example: Fruit Classifier',
+        items: [
+          "Training Data: Images labeled 'Apple' or 'Banana'",
+          'Model learns associations between images and labels',
+          'Goal: Predict labels for new, unlabeled fruit images',
+        ],
+        existingShapes: existingLeftNotes,
+      });
+
+      const cardRect = cardShapes.find((s) => s.shapeType === 'rectangle');
+      expect(cardRect).toBeDefined();
+
+      // Card must not overlap any existing note
+      for (const note of existingLeftNotes) {
+        const overlaps =
+          cardRect!.x < note.x + note.width &&
+          cardRect!.x + cardRect!.width! > note.x &&
+          cardRect!.y < note.y + note.height &&
+          cardRect!.y + cardRect!.height! > note.y;
+        expect(overlaps).toBe(false);
+      }
     });
 
     it('Scenario 4: Multi-line wrapped items dynamically adjust spacing so lines never overlap', () => {
@@ -967,6 +1026,1023 @@ describe('DiagramLayoutEngine — Deterministic Diagram & Layout Solver', () => 
       expect(erased).toBe(true);
       // All shapes belonging to the comparison board must be removed!
       expect(engine.getDrawnShapes().length).toBe(0);
+    });
+
+    it('Scenario 6: Symbiosis Tree Sub-Branch strictly descends vertically below attached parent node', () => {
+      const mockCanvasAdapter = {
+        clear: vi.fn(),
+        drawRectangle: vi.fn(),
+        drawEllipse: vi.fn(),
+        drawLine: vi.fn(),
+        drawArrow: vi.fn(),
+        drawText: vi.fn(),
+      } as any;
+      const mockSvgOverlay = {
+        clear: vi.fn(),
+        render: vi.fn(),
+      } as any;
+
+      const engine = new SyncEngine({
+        canvasAdapter: mockCanvasAdapter,
+        svgOverlay: mockSvgOverlay,
+        getWritingStyle: () => 'normal',
+      });
+
+      // 1. Initial 3-way tree: Root + 3 children across the slide
+      const initialShapes = [
+        {
+          id: 'root-node',
+          shapeType: 'rectangle' as const,
+          x: 750,
+          y: 160,
+          width: 320,
+          height: 60,
+          options: { label: 'Machine Learning Types' },
+        },
+        {
+          id: 'child-sup',
+          shapeType: 'rectangle' as const,
+          x: 220,
+          y: 280,
+          width: 220,
+          height: 55,
+          options: { label: 'Supervised Learning' },
+        },
+        {
+          id: 'child-unsup',
+          shapeType: 'rectangle' as const,
+          x: 780,
+          y: 280,
+          width: 240,
+          height: 55,
+          options: { label: 'Unsupervised Learning' },
+        },
+        {
+          id: 'child-rl',
+          shapeType: 'rectangle' as const,
+          x: 1340,
+          y: 280,
+          width: 240,
+          height: 55,
+          options: { label: 'Reinforcement Learning' },
+        },
+      ];
+
+      engine.loadBoard(initialShapes, []);
+
+      // 2. Spatial layout must expose available semantic slots under each node
+      const spatial = engine.getSpatialLayout();
+      expect(spatial.nodes.length).toBe(4);
+      expect(spatial.availableSlots.length).toBeGreaterThanOrEqual(4);
+      expect(spatial.layoutSummary).toContain('Supervised Learning');
+
+      // 3. Generate sub-tree for 'Supervised Learning'
+      const subTreeShapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Supervised Learning Subtypes',
+        root: 'Supervised Learning Subtypes',
+        attachToNode: 'Supervised Learning',
+        nodes: [
+          { label: 'Classification', items: ['Discrete labels'] },
+          { label: 'Regression', items: ['Continuous values'] },
+        ],
+        existingShapes: initialShapes,
+      });
+
+      // The child diagram must NOT be shoved to the right side of the canvas (> 800)
+      const subTreeRectangles = subTreeShapes.filter((s) => s.shapeType === 'rectangle');
+      expect(subTreeRectangles.length).toBeGreaterThanOrEqual(2);
+
+      const subTreeRoot = subTreeRectangles.find((r) =>
+        (r.options?.label || r.label || '').includes('Supervised Learning Subtypes')
+      );
+      expect(subTreeRoot).toBeDefined();
+
+      // Parent center X = 220 + 110 = 330.
+      // Child root center X must be aligned near 330 (+/- 80px), definitely < 600 (NOT pushed to right!)
+      const childCenterX = (subTreeRoot!.x ?? 0) + (subTreeRoot!.width ?? 140) / 2;
+      expect(childCenterX).toBeLessThan(600);
+      expect(childCenterX).toBeGreaterThan(150);
+
+      // Child root Y must be strictly below parent bottom (280 + 55 = 335)
+      expect(subTreeRoot!.y).toBeGreaterThan(335);
+
+      // Bridging arrow must point downwards from parent
+      const arrows = subTreeShapes.filter((s) => s.shapeType === 'arrow');
+      const bridgeArrow = arrows.find(
+        (a) => (a.y ?? 0) >= 335 && Math.abs((a.x ?? 0) - 330) < 60
+      );
+      expect(bridgeArrow).toBeDefined();
+    });
+
+    it('guarantees multi-sibling subtrees align horizontally on the same tier without staircase cascade or overflowing SAFE_MAX_Y', () => {
+      // 1. Initial 3-branch overview diagram
+      const mainTree = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Machine Learning Types',
+        root: 'Machine Learning Types',
+        nodes: [
+          { label: 'Supervised Learning' },
+          { label: 'Unsupervised Learning' },
+          { label: 'Reinforcement Learning' },
+        ],
+      });
+
+      let currentShapes = [...mainTree];
+
+      // 2. Attach sub-tree 1 under 'Supervised Learning'
+      const sub1 = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Supervised Learning Categories',
+        root: 'Supervised Learning Categories',
+        attachToNode: 'Supervised Learning',
+        nodes: [
+          { label: 'Classification' },
+          { label: 'Regression' },
+        ],
+        existingShapes: currentShapes,
+      });
+      currentShapes.push(...sub1);
+
+      // 3. Attach sub-tree 2 under 'Unsupervised Learning'
+      const sub2 = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Unsupervised Learning Categories',
+        root: 'Unsupervised Learning Categories',
+        attachToNode: 'Unsupervised Learning',
+        nodes: [
+          { label: 'Clustering' },
+          { label: 'Dimensionality Reduction' },
+        ],
+        existingShapes: currentShapes,
+      });
+      currentShapes.push(...sub2);
+
+      // 4. Attach sub-tree 3 under 'Reinforcement Learning'
+      const sub3 = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Reinforcement Learning Categories',
+        root: 'Reinforcement Learning Categories',
+        attachToNode: 'Reinforcement Learning',
+        nodes: [
+          { label: 'Model-Free' },
+          { label: 'Model-Based' },
+        ],
+        existingShapes: currentShapes,
+      });
+      currentShapes.push(...sub3);
+
+      // Extract root rectangles of each sub-tree
+      const sub1Root = sub1.find((s) => s.shapeType === 'rectangle' && (s.options?.label || '').includes('Supervised Learning Categories'));
+      const sub2Root = sub2.find((s) => s.shapeType === 'rectangle' && (s.options?.label || '').includes('Unsupervised Learning Categories'));
+      const sub3Root = sub3.find((s) => s.shapeType === 'rectangle' && (s.options?.label || '').includes('Reinforcement Learning Categories'));
+
+      expect(sub1Root).toBeDefined();
+      expect(sub2Root).toBeDefined();
+      expect(sub3Root).toBeDefined();
+
+      // Tier Alignment Check: Sibling sub-diagram roots must align horizontally on the same tier (+/- 30px)
+      // They must NOT cascade down like stairs (e.g. 440 -> 680 -> 870)
+      expect(Math.abs(sub1Root!.y - sub2Root!.y)).toBeLessThanOrEqual(35);
+      expect(Math.abs(sub2Root!.y - sub3Root!.y)).toBeLessThanOrEqual(35);
+
+      // Canvas Boundary Check: NO shape in any diagram must ever fall below SAFE_MAX_Y (980)
+      for (const s of currentShapes) {
+        const bottom = (s.y ?? 0) + (s.height ?? 0);
+        expect(bottom).toBeLessThanOrEqual(980);
+        if (s.toY !== undefined) {
+          expect(s.toY).toBeLessThanOrEqual(980);
+        }
+      }
+
+      // Horizontal Ordering: Supervised (left) < Unsupervised (center) < Reinforcement (right)
+      expect(sub1Root!.x).toBeLessThan(sub2Root!.x);
+      expect(sub2Root!.x).toBeLessThan(sub3Root!.x);
+    });
+  });
+
+  describe('Recursive Multi-Depth Trees, Empty Placeholder Boxes & In-Place Diagram Evolution', () => {
+    const createMockEngine = () => {
+      const mockCanvasAdapter = {
+        clear: vi.fn(),
+        drawRectangle: vi.fn(),
+        drawEllipse: vi.fn(),
+        drawLine: vi.fn(),
+        drawArrow: vi.fn(),
+        drawText: vi.fn(),
+      } as any;
+      const mockSvgOverlay = {
+        clear: vi.fn(),
+        render: vi.fn(),
+        seek: vi.fn(),
+      } as any;
+      const engine = new SyncEngine({
+        canvasAdapter: mockCanvasAdapter,
+        svgOverlay: mockSvgOverlay,
+        getWritingStyle: () => 'normal',
+      });
+      const dispatchDiagram = (options: any) => {
+        (engine as any).executeShapeCommand({
+          id: `diag-${Date.now()}-${Math.random()}`,
+          kind: 'shape',
+          shapeType: 'diagram',
+          x: 120,
+          y: 130,
+          options,
+        });
+      };
+      return { engine, mockCanvasAdapter, dispatchDiagram };
+    };
+
+    it('renders nested children at depth 2 as connected rectangle boxes with arrows (never flattened to bullet text)', () => {
+      const shapes = DiagramLayoutEngine.generateShapes({
+        title: 'Machine Learning Hierarchy',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          {
+            label: 'Supervised Learning',
+            children: [{ label: 'Classification' }, { label: 'Regression' }],
+          },
+          {
+            label: 'Unsupervised Learning',
+            children: [{ label: 'Clustering' }, { label: 'Dimensionality Reduction' }],
+          },
+          {
+            label: 'Reinforcement Learning',
+            children: [{ label: 'Q-Learning' }, { label: 'Policy Gradient' }],
+          },
+        ],
+      });
+
+      const rects = shapes.filter((s) => s.shapeType === 'rectangle');
+      const arrows = shapes.filter((s) => s.shapeType === 'arrow');
+      const texts = shapes.filter((s) => s.shapeType === 'text');
+
+      // 1 root + 3 categories + 6 sub-branches = 10 rectangle boxes
+      expect(rects.length).toBe(10);
+      // 3 root->category arrows + 6 category->sub-branch arrows = 9 arrows
+      expect(arrows.length).toBe(9);
+      // 0 bullet text items
+      expect(texts.length).toBe(0);
+
+      const rootRect = rects.find((r) => r.options?.label === 'Machine Learning')!;
+      const catRects = rects.filter((r) =>
+        ['Supervised Learning', 'Unsupervised Learning', 'Reinforcement Learning'].includes(r.options?.label || '')
+      );
+      const leafRects = rects.filter(
+        (r) =>
+          r !== rootRect &&
+          !catRects.includes(r)
+      );
+
+      expect(catRects.length).toBe(3);
+      expect(leafRects.length).toBe(6);
+
+      // Strict depth Y ordering: root < categories < leaf sub-branches
+      for (const cat of catRects) {
+        expect(cat.y).toBeGreaterThan(rootRect.y + (rootRect.height ?? 50));
+      }
+      for (const leaf of leafRects) {
+        expect(leaf.y).toBeGreaterThan(catRects[0].y + (catRects[0].height ?? 50));
+      }
+
+      // Leaf boxes must not overlap horizontally
+      const sortedLeaves = [...leafRects].sort((a, b) => a.x - b.x);
+      for (let i = 0; i < sortedLeaves.length - 1; i++) {
+        expect(sortedLeaves[i + 1].x).toBeGreaterThanOrEqual(
+          sortedLeaves[i].x + (sortedLeaves[i].width ?? 0)
+        );
+      }
+    });
+
+    it('renders placeholder labels ("...", "") as empty rectangle boxes connected by arrows instead of bullets', () => {
+      const shapes = DiagramLayoutEngine.generateShapes({
+        title: 'Machine Learning Types',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          {
+            label: 'Supervised Learning',
+            children: [{ label: '...' }, { label: '...' }],
+          },
+          {
+            label: 'Unsupervised Learning',
+            children: [{ label: '' }, { label: '?' }],
+          },
+          {
+            label: 'Reinforcement Learning',
+            children: [{ label: '...' }, { label: '...' }],
+          },
+        ],
+      });
+
+      const rects = shapes.filter((s) => s.shapeType === 'rectangle');
+      const arrows = shapes.filter((s) => s.shapeType === 'arrow');
+      const texts = shapes.filter((s) => s.shapeType === 'text');
+
+      expect(rects.length).toBe(10);
+      expect(arrows.length).toBe(9);
+      expect(texts.length).toBe(0);
+
+      const emptyBoxes = rects.filter((r) => (r.options?.label || '') === '');
+      expect(emptyBoxes.length).toBe(6);
+    });
+
+    it('evolves a concept tree in-place across multiple draw_diagram calls without stacking duplicate trees', () => {
+      const { engine, dispatchDiagram } = createMockEngine();
+
+      // Step 1: Draw initial 3-branch Machine Learning tree
+      dispatchDiagram({
+        title: 'Machine Learning',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          { label: 'Supervised Learning' },
+          { label: 'Unsupervised Learning' },
+          { label: 'Reinforcement Learning' },
+        ],
+      });
+
+      let rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      expect(rects.length).toBe(4);
+
+      // Step 2: User asks to branch empty boxes under each category
+      dispatchDiagram({
+        title: 'Machine Learning',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          { label: 'Supervised Learning', children: [{ label: '...' }, { label: '...' }] },
+          { label: 'Unsupervised Learning', children: [{ label: '...' }, { label: '...' }] },
+          { label: 'Reinforcement Learning', children: [{ label: '...' }, { label: '...' }] },
+        ],
+      });
+
+      rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const mlRootsAfterPlaceholder = rects.filter((r) => r.options?.label === 'Machine Learning');
+      // Still ONLY ONE Machine Learning root box on the board!
+      expect(mlRootsAfterPlaceholder.length).toBe(1);
+      // 1 root + 3 categories + 6 empty placeholder boxes = 10 rectangles
+      expect(rects.length).toBe(10);
+
+      // Step 3: User asks to fill in real sub-branch names (or attaches via attachToNode with wrapper titles)
+      dispatchDiagram({
+        title: 'Supervised Learning Sub-points',
+        diagramType: 'tree',
+        attachToNode: 'Supervised Learning',
+        nodes: [{ label: 'Supervised Tasks', items: ['Regression', 'Classification'] }],
+      });
+      dispatchDiagram({
+        title: 'Unsupervised Learning Sub-points',
+        diagramType: 'tree',
+        attachToNode: 'Unsupervised Learning',
+        nodes: [{ label: 'Unsupervised Tasks', items: ['Clustering', 'Association'] }],
+      });
+      dispatchDiagram({
+        title: 'Reinforcement Learning Sub-points',
+        diagramType: 'tree',
+        attachToNode: 'Reinforcement Learning',
+        nodes: [{ label: 'Reinforcement Applications', items: ['Decision Making', 'Game AI'] }],
+      });
+
+      rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const mlRootsFinal = rects.filter((r) => r.options?.label === 'Machine Learning');
+      expect(mlRootsFinal.length).toBe(1);
+      // Placeholder boxes were replaced in-place by the 6 named leaf boxes -> still 10 boxes total!
+      expect(rects.length).toBe(10);
+      const labels = rects.map((r) => r.options?.label);
+      expect(labels).toContain('Regression');
+      expect(labels).toContain('Classification');
+      expect(labels).toContain('Clustering');
+      expect(labels).toContain('Association');
+      expect(labels).toContain('Decision Making');
+      expect(labels).toContain('Game AI');
+    });
+
+    it('continues a 15-box flowchart to 30 boxes in-place with serpentine wrapping and no duplicate flowcharts', () => {
+      const { engine, dispatchDiagram } = createMockEngine();
+
+      // Step 1: 15-box horizontal flowchart
+      const first15 = Array.from({ length: 15 }, (_, i) => ({
+        label: `Box ${i + 1}`,
+      }));
+      dispatchDiagram({
+        title: '15 Boxes Flowchart',
+        diagramType: 'flowchart',
+        direction: 'LR',
+        nodes: first15,
+      });
+
+      let rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      let arrows = engine.getDrawnShapes().filter((s) => s.shapeType === 'arrow');
+      expect(rects.length).toBe(15);
+      expect(arrows.length).toBe(14);
+      // Ensure no double numbering like "15. Box 15"
+      expect(rects[14].options?.label).toBe('Box 15');
+
+      // Step 2: Continue from Box 15 to Box 30 using attachToNode="Box 15" (even with wrong flow='right' on row 4)
+      const next15 = Array.from({ length: 15 }, (_, i) => ({
+        label: `Box ${i + 16}`,
+        flow: 'right' as const,
+      }));
+      dispatchDiagram({
+        title: 'Boxes 16 to 30 Continuation',
+        attachToNode: 'Box 15',
+        direction: 'LR',
+        nodes: next15,
+      });
+
+      rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      arrows = engine.getDrawnShapes().filter((s) => s.shapeType === 'arrow');
+
+      // In-place continuation: 30 boxes total (NOT 15 + 15 in two separate diagrams) and 29 arrows
+      expect(rects.length).toBe(30);
+      expect(arrows.length).toBe(29);
+
+      // Every single box and arrow stays strictly inside the safe canvas bounds
+      for (const r of rects) {
+        expect(r.x).toBeGreaterThanOrEqual(115);
+        expect(r.x + (r.width ?? 0)).toBeLessThanOrEqual(1805);
+        expect(r.y).toBeGreaterThanOrEqual(105);
+        expect(r.y + (r.height ?? 0)).toBeLessThanOrEqual(980);
+      }
+    });
+
+    it('preserves queued drawing commands when selective erase() is called before scheduledTime drains', () => {
+      const { engine } = createMockEngine();
+
+      // Seed an existing shape on the board
+      engine.loadBoard(
+        [
+          {
+            id: 'old-shape',
+            kind: 'shape',
+            shapeType: 'rectangle',
+            x: 200,
+            y: 200,
+            width: 200,
+            height: 60,
+            options: { label: 'Old Concept', diagramTitle: 'Old Concept' },
+          },
+        ],
+        []
+      );
+
+      // Enqueue a new diagram command scheduled 200ms in the future
+      engine.onDrawCommand({
+        id: 'queued-diagram',
+        type: 'shape',
+        scheduledTime: 10,
+        commitGroup: 'g1',
+        payload: {
+          kind: 'shape',
+          shapeType: 'diagram',
+          x: 120,
+          y: 130,
+          options: {
+            title: 'Machine Learning',
+            diagramType: 'tree',
+            root: 'Machine Learning',
+            nodes: [{ label: 'Supervised' }, { label: 'Unsupervised' }],
+          },
+        } as any,
+      });
+
+      // Selective erase arrives immediately (before t=10)
+      engine.erase('Old Concept');
+      expect(engine.getDrawnShapes().length).toBe(0);
+
+      // Queue must NOT have been flushed by selective erase!
+      const ready = (engine as any).drawingQueue.drain(20);
+      expect(ready.length).toBe(1);
+    });
+
+    it('guarantees zero horizontal text overlap and uniform baseline across 6 leaf columns with long bullet descriptions, and supports clearing descriptions in-place', () => {
+      const { engine, dispatchDiagram } = createMockEngine();
+
+      dispatchDiagram({
+        title: 'Machine Learning Categories',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          {
+            label: 'Supervised Learning',
+            children: [
+              {
+                label: 'Classification',
+                items: ['Predicts discrete labels (e.g., Spam vs. Not Spam)'],
+              },
+              {
+                label: 'Regression',
+                items: ['Predicts continuous numeric values (e.g., House prices)'],
+              },
+            ],
+          },
+          {
+            label: 'Unsupervised Learning',
+            children: [
+              {
+                label: 'Clustering',
+                items: ['Groups similar data points together (e.g., Customer segmentation)'],
+              },
+              {
+                label: 'Association',
+                items: ['Finds relationships between items (e.g., Market basket analysis)'],
+              },
+            ],
+          },
+          {
+            label: 'Reinforcement Learning',
+            children: [
+              {
+                label: 'Model-Free Learning',
+                items: ['Agent learns through trial and error (e.g., Robotics, Game playing)'],
+              },
+              {
+                label: 'Model-Based Learning',
+                items: ['Agent creates a model of the environment to plan actions'],
+              },
+            ],
+          },
+        ],
+      });
+
+      const shapes = engine.getDrawnShapes();
+      const rects = shapes.filter((s) => s.shapeType === 'rectangle');
+      const texts = shapes.filter((s) => s.shapeType === 'text');
+
+      expect(rects.length).toBe(10);
+      expect(texts.length).toBe(6);
+
+      // All 6 leaf boxes at depth 2 must share the exact same Y and uniform height
+      const leafRects = rects.filter((r) => r.options?.treeDepth === 2);
+      expect(leafRects.length).toBe(6);
+      for (const lr of leafRects) {
+        expect(lr.y).toBe(leafRects[0].y);
+        expect(lr.height).toBe(leafRects[0].height);
+      }
+
+      // All 6 bullet text blocks must start on the exact same Y baseline and have strictly disjoint horizontal columns
+      const sortedTexts = [...texts].sort((a, b) => a.x - b.x);
+      for (let i = 0; i < sortedTexts.length; i++) {
+        expect(sortedTexts[i].y).toBe(sortedTexts[0].y);
+        if (i < sortedTexts.length - 1) {
+          const leftColRightEdge = sortedTexts[i].x + (sortedTexts[i].options?.maxWidth ?? sortedTexts[i].width ?? 0);
+          const nextColLeftEdge = sortedTexts[i + 1].x;
+          // At least 16px of strict horizontal whitespace between adjacent text columns
+          expect(leftColRightEdge).toBeLessThanOrEqual(nextColLeftEdge - 16);
+        }
+      }
+
+      // Now simulate user asking to remove the descriptive text under the boxes (sending full tree with items: [])
+      dispatchDiagram({
+        title: 'Machine Learning Categories',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        nodes: [
+          {
+            label: 'Supervised Learning',
+            children: [{ label: 'Classification' }, { label: 'Regression' }],
+          },
+          {
+            label: 'Unsupervised Learning',
+            children: [{ label: 'Clustering' }, { label: 'Association' }],
+          },
+          {
+            label: 'Reinforcement Learning',
+            children: [{ label: 'Model-Free Learning' }, { label: 'Model-Based Learning' }],
+          },
+        ],
+      });
+
+      const updatedShapes = engine.getDrawnShapes();
+      expect(updatedShapes.filter((s) => s.shapeType === 'rectangle').length).toBe(10);
+      expect(updatedShapes.filter((s) => s.shapeType === 'text').length).toBe(0);
+    });
+
+    it('renders multi-line prose with literal \\n via drawText and NEVER routes it to KaTeX mathOverlay', () => {
+      const drawnTexts: string[] = [];
+      const addedMath: string[] = [];
+
+      const mockCanvasAdapter: any = {
+        clear: vi.fn(),
+        drawRectangle: vi.fn(),
+        drawEllipse: vi.fn(),
+        drawLine: vi.fn(),
+        drawArrow: vi.fn(),
+        drawPolygon: vi.fn(),
+        drawFreehand: vi.fn(),
+        drawText: vi.fn((text: string) => drawnTexts.push(text)),
+        removeShape: vi.fn(),
+        commitFrame: vi.fn(),
+        rollbackToLastCommit: vi.fn(),
+        resize: vi.fn(),
+        getShapeBounds: vi.fn(),
+        moveShape: vi.fn(),
+        resizeShape: vi.fn(),
+      };
+
+      const mockSvgOverlay: any = {
+        clear: vi.fn(),
+        addWord: vi.fn(),
+        setWords: vi.fn(),
+        commitFrame: vi.fn(),
+        rollbackToLastCommit: vi.fn(),
+        hasActiveDrawings: vi.fn().mockReturnValue(false),
+      };
+
+      const mockMathOverlay: any = {
+        clear: vi.fn(),
+        addMath: vi.fn((m: any) => addedMath.push(m.latex)),
+      };
+
+      const engine = new SyncEngine({
+        canvasAdapter: mockCanvasAdapter,
+        svgOverlay: mockSvgOverlay,
+        mathOverlay: mockMathOverlay,
+        getWritingStyle: () => 'normal',
+      });
+
+      const proseWithEscapedNewlines =
+        'Supervised Learning Types:\\n• Regression: Predicts numerical continuous values (e.g., house price).\\n• Classification: Categorizes data into distinct classes (e.g., spam vs. non-spam).';
+
+      (engine as any).executeShapeCommand({
+        kind: 'shape',
+        shapeType: 'text',
+        x: 140,
+        y: 200,
+        options: {
+          text: proseWithEscapedNewlines,
+          fontSize: 24,
+          color: '#FFFFFF',
+        },
+      });
+
+      expect(addedMath).toHaveLength(0);
+      expect(drawnTexts.length).toBeGreaterThan(0);
+      expect(drawnTexts[0]).not.toContain('\\n');
+      expect(drawnTexts[0]).toContain('\n• Regression:');
+    });
+
+    it('supports Bottom-to-Top (BT), Left-to-Right (LR), and Right-to-Left (RL) tree diagrams', () => {
+      const btShapes = DiagramLayoutEngine.generateShapes({
+        title: 'Bottom-Up ML Tree',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        direction: 'BT',
+        nodes: [
+          { label: 'Supervised Learning' },
+          { label: 'Unsupervised Learning' },
+          { label: 'Reinforcement Learning' },
+        ],
+      });
+
+      const rects = btShapes.filter((s) => s.shapeType === 'rectangle');
+      const arrows = btShapes.filter((s) => s.shapeType === 'arrow');
+      expect(rects.length).toBe(4);
+      expect(arrows.length).toBe(3);
+
+      const rootRect = rects.find((r) => r.options?.label === 'Machine Learning')!;
+      const childRects = rects.filter((r) => r.options?.label !== 'Machine Learning');
+      for (const c of childRects) {
+        // In Bottom-to-Top (BT) mode, children are positioned ABOVE the root (smaller Y)
+        expect(c.y).toBeLessThan(rootRect.y);
+      }
+      for (const a of arrows) {
+        // Arrows point UPWARD from root top to child bottom
+        expect(a.toY!).toBeLessThan(a.y);
+      }
+
+      const rlShapes = DiagramLayoutEngine.generateShapes({
+        title: 'Right-to-Left Tree',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        direction: 'RL',
+        nodes: [{ label: 'Supervised Learning' }, { label: 'Unsupervised Learning' }],
+      });
+      const rlRects = rlShapes.filter((s) => s.shapeType === 'rectangle');
+      const rlRoot = rlRects.find((r) => r.options?.label === 'Machine Learning')!;
+      const rlChild = rlRects.find((r) => r.options?.label === 'Supervised Learning')!;
+      expect(rlChild.x).toBeLessThan(rlRoot.x);
+    });
+
+    it('performs surgical in-place updates via updateItem and reports self-review boardAudit', () => {
+      const { engine, dispatchDiagram } = createMockEngine();
+
+      dispatchDiagram({
+        title: 'ML Overview',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        direction: 'TB',
+        nodes: [
+          { label: 'Supervised Learning', items: ['Sub-topic'] },
+          { label: 'Unsupervised Learning' },
+        ],
+      });
+
+      // Self-audit should flag the placeholder '• Sub-topic'
+      const auditBefore = engine.getSpatialLayout().boardAudit;
+      expect(auditBefore.status).toBe('WARNING');
+      expect(auditBefore.anomalies.some((a) => a.includes('Sub-topic'))).toBe(true);
+
+      // Surgically replace 'Sub-topic' bullet and flip diagram direction to BT in place
+      const updated1 = engine.updateItem({
+        target: 'Sub-topic',
+        newText: 'Predicts continuous or discrete outputs',
+        action: 'replace',
+      });
+      expect(updated1).toBe(true);
+
+      const auditAfter = engine.getSpatialLayout().boardAudit;
+      expect(auditAfter.status).toBe('CLEAN');
+
+      const updatedDir = engine.updateItem({
+        target: 'ML Overview',
+        newDirection: 'BT',
+      });
+      expect(updatedDir).toBe(true);
+
+      const rects = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const rootRect = rects.find((r) => r.options?.label === 'Machine Learning')!;
+      const childRect = rects.find((r) => r.options?.label === 'Supervised Learning')!;
+      expect(childRect.y).toBeLessThan(rootRect.y);
+    });
+
+    it('keeps diagram locked at its exact top-center position when renaming a box label even after left-column text notes are added below', () => {
+      const { engine, dispatchDiagram } = createMockEngine();
+
+      // 1. Draw the initial Machine Learning tree at top-center (empty board)
+      dispatchDiagram({
+        title: 'Machine Learning',
+        diagramType: 'tree',
+        root: 'Machine Learning',
+        direction: 'TB',
+        nodes: [
+          { label: 'Supervised Learning' },
+          { label: 'Unsupervised Learning' },
+          { label: 'Reinforcement Learning' },
+        ],
+      });
+
+      const rectsBefore = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const rootBefore = rectsBefore.find((r) => r.options?.label === 'Machine Learning')!;
+      const supBefore = rectsBefore.find((r) => r.options?.label === 'Supervised Learning')!;
+      const unsupBefore = rectsBefore.find((r) => r.options?.label === 'Unsupervised Learning')!;
+      const reinfBefore = rectsBefore.find((r) => r.options?.label === 'Reinforcement Learning')!;
+
+      const origRootCenterX = Math.round(rootBefore.x + (rootBefore.width ?? 180) / 2);
+      const origRootY = rootBefore.y;
+
+      // 2. Add standalone text notes in the left column below the diagram (x=150, y=450..700)
+      (engine as any).executeShapeCommand({
+        kind: 'shape',
+        shapeType: 'text',
+        x: 150,
+        y: 450,
+        options: {
+          text: 'Supervised Learning: Training models on labeled data.\nUnsupervised Learning: Finding patterns in unlabeled data.',
+          fontSize: 22,
+          color: '#FFFFFF',
+        },
+      });
+      (engine as any).executeShapeCommand({
+        kind: 'shape',
+        shapeType: 'text',
+        x: 150,
+        y: 590,
+        options: {
+          text: 'Supervised Example: Email spam detection.\nUnsupervised Example: Customer segmentation.',
+          fontSize: 22,
+          color: '#FFFFFF',
+        },
+      });
+
+      // 3. Rename "Machine Learning" -> "Machine Learning Types" via updateItem
+      const didUpdate = engine.updateItem({
+        target: 'Machine Learning',
+        newText: 'Machine Learning Types',
+        action: 'replace',
+      });
+      expect(didUpdate).toBe(true);
+
+      const rectsAfter = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const rootAfter = rectsAfter.find((r) => r.options?.label === 'Machine Learning Types')!;
+      expect(rootAfter).toBeDefined();
+
+      // Root box must stay at its exact original top Y and horizontal center (NOT thrown to bottom-right!)
+      const newRootCenterX = Math.round(rootAfter.x + (rootAfter.width ?? 180) / 2);
+      expect(rootAfter.y).toBe(origRootY);
+      expect(Math.abs(newRootCenterX - origRootCenterX)).toBeLessThanOrEqual(2);
+
+      // Child boxes must not have moved by even 1px
+      const supAfter = rectsAfter.find((r) => r.options?.label === 'Supervised Learning')!;
+      const unsupAfter = rectsAfter.find((r) => r.options?.label === 'Unsupervised Learning')!;
+      const reinfAfter = rectsAfter.find((r) => r.options?.label === 'Reinforcement Learning')!;
+      expect(supAfter.x).toBe(supBefore.x);
+      expect(supAfter.y).toBe(supBefore.y);
+      expect(unsupAfter.x).toBe(unsupBefore.x);
+      expect(unsupAfter.y).toBe(unsupBefore.y);
+      expect(reinfAfter.x).toBe(reinfBefore.x);
+      expect(reinfAfter.y).toBe(reinfBefore.y);
+
+      // 4. Also verify structural rebuild (e.g. adding bullet items to a diagram box) stays anchored at top-center
+      const didStructUpdate = engine.updateItem({
+        target: 'Unsupervised Learning',
+        newItems: ['Clustering', 'Association'],
+        action: 'set_items',
+      });
+      expect(didStructUpdate).toBe(true);
+
+      const rectsAfterStruct = engine.getDrawnShapes().filter((s) => s.shapeType === 'rectangle');
+      const rootAfterStruct = rectsAfterStruct.find((r) => r.options?.label === 'Machine Learning Types')!;
+      expect(rootAfterStruct.y).toBe(origRootY);
+      expect(Math.abs(Math.round(rootAfterStruct.x + (rootAfterStruct.width ?? 180) / 2) - origRootCenterX)).toBeLessThanOrEqual(5);
+    });
+
+    it('Scenario 7: Automatically unpacks stringified Python or JSON dictionaries passed into options.root into full multi-branch concept tree', () => {
+      const rawPythonDictString = "{'label': 'Machine Learning', 'children': [{'label': 'Supervised Learning', 'items': ['Uses labeled training data (Input + Output)', 'Goal: Predict output for new inputs', 'Examples: Customer segmentation, Fruit identification']}, {'label': 'Unsupervised Learning', 'items': ['Uses unlabeled data (Input only)', 'Goal: Discover hidden patterns or structure', 'Examples: Customer segmentation (Clustering), Anomaly detection']}, {'label': 'Reinforcement Learning', 'items': ['Learns through trial and error', 'Based on Reward/Penalty feedback loop', 'Examples: Game playing, Robot navigation']}]}";
+
+      const shapes = DiagramLayoutEngine.generateShapes({
+        diagramType: 'tree',
+        title: 'Machine Learning Comprehensive Roadmap',
+        root: rawPythonDictString,
+        nodes: [],
+      });
+
+      const rectShapes = shapes.filter((s) => s.shapeType === 'rectangle');
+      // Must NOT be 1 single box containing raw Python code! Must have 4 boxes: 1 root + 3 children!
+      expect(rectShapes.length).toBe(4);
+
+      const rootRect = rectShapes.find((r) => r.options?.label === 'Machine Learning');
+      expect(rootRect).toBeDefined();
+
+      const supRect = rectShapes.find((r) => r.options?.label === 'Supervised Learning');
+      const unsupRect = rectShapes.find((r) => r.options?.label === 'Unsupervised Learning');
+      const reinfRect = rectShapes.find((r) => r.options?.label === 'Reinforcement Learning');
+
+      expect(supRect).toBeDefined();
+      expect(unsupRect).toBeDefined();
+      expect(reinfRect).toBeDefined();
+
+      // Connecting arrows from root to all 3 children
+      const arrowShapes = shapes.filter((s) => s.shapeType === 'arrow');
+      expect(arrowShapes.length).toBe(3);
+
+      // Bullet items under child boxes
+      const bulletTextShapes = shapes.filter((s) => s.shapeType === 'text');
+      expect(bulletTextShapes.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it('robustly parses nodes and root that use text property instead of label (LLM schema tolerance)', () => {
+      const options = {
+        direction: 'TB' as const,
+        root: {
+          text: 'Entscheidungsbaum-Vergleich',
+          items: ['Frage an Mohamed: Welcher Baum generalisiert besser?'],
+        } as any,
+        nodes: [
+          {
+            text: 'Baum A (Tiefe 10)',
+            items: ['Sehr tief', 'Hohe Komplexitaet'],
+            children: [{ text: 'Knoten Ebene 1' } as any],
+          } as any,
+          {
+            text: 'Baum B (Tiefe 3)',
+            items: ['Flacher', 'Bessere Generalisierung'],
+            children: [{ text: 'Blatt Ebene 3' } as any],
+          } as any,
+        ],
+      };
+
+      const shapes = DiagramLayoutEngine.generateShapes(options);
+      const rectShapes = shapes.filter((s) => s.shapeType === 'rectangle');
+
+      // Must have root box + 2 children + 2 grandchildren = 5 boxes (NEVER 1 lone Concept box!)
+      expect(rectShapes.length).toBe(5);
+
+      const rootRect = rectShapes.find((r) => r.options?.label === 'Entscheidungsbaum-Vergleich');
+      expect(rootRect).toBeDefined();
+
+      const baumARect = rectShapes.find((r) => r.options?.label === 'Baum A (Tiefe 10)');
+      const baumBRect = rectShapes.find((r) => r.options?.label === 'Baum B (Tiefe 3)');
+      expect(baumARect).toBeDefined();
+      expect(baumBRect).toBeDefined();
+    });
+
+    it('accurately resolves root_text and adaptively folds multi-leaf branches when placed on right half (zero horizontal overlap)', () => {
+      const nemotronPayload: any = {
+        diagramType: 'tree',
+        root_text: 'Summary: AI for Motion Graphics',
+        direction: 'TB',
+        position: 'right',
+        children: [
+          {
+            text: '1. Levels of Complexity',
+            children: [
+              { text: 'Direct' },
+              { text: 'AI Voice Tools' },
+              { text: '3D Tools' },
+            ],
+          },
+          {
+            text: '2. The 4-Step Workflow',
+            children: [
+              { text: 'Inputs' },
+              { text: 'Storyboard' },
+              { text: 'Build' },
+              { text: 'Audio' },
+            ],
+          },
+          {
+            text: '3. Key Pro Tips',
+            children: [
+              { text: 'High-quality assets' },
+              { text: 'Seamless transitions' },
+              { text: 'Constant motion' },
+              { text: 'Audio last' },
+            ],
+          },
+        ],
+      };
+
+      const shapes = DiagramLayoutEngine.generateShapes(nemotronPayload);
+      const rects = shapes.filter((s) => s.shapeType === 'rectangle');
+
+      // 1 root + 3 categories + 11 leaves = 15 rectangle boxes
+      expect(rects.length).toBe(15);
+
+      // Root box must have the actual title, NOT 'Overview'!
+      const rootRect = rects.find((r) => r.options?.treeDepth === 0);
+      expect(rootRect).toBeDefined();
+      expect(rootRect?.options?.label).toBe('Summary: AI for Motion Graphics');
+
+      // All shapes must be placed inside the right column (x >= 960)
+      for (const r of rects) {
+        expect(r.x).toBeGreaterThanOrEqual(960);
+        expect(r.x + (r.width ?? 0)).toBeLessThanOrEqual(1800);
+      }
+
+      // Check strictly NO horizontal overlapping on any tier:
+      rects.sort((a, b) => a.y - b.y || a.x - b.x);
+      for (let i = 0; i < rects.length - 1; i++) {
+        const a = rects[i];
+        const b = rects[i + 1];
+        if (Math.abs(a.y - b.y) < Math.min(a.height ?? 40, b.height ?? 40) * 0.7) {
+          const aRight = a.x + (a.width ?? 0);
+          expect(b.x).toBeGreaterThanOrEqual(aRight);
+        }
+      }
+
+      // Step 2: Now add a Concept Card when the left half is occupied by video (as in the real session)
+      const videoShape: any = {
+        kind: 'shape',
+        shapeType: 'rectangle',
+        x: 60,
+        y: 600,
+        width: 500,
+        height: 350,
+      };
+
+      const cardPayload: any = {
+        diagramType: 'concept_card',
+        title: 'Comprehensive Summary',
+        items: [
+          'Claude as Motion Graphics Designer',
+          '3 Complexity Levels',
+          '4-Step Workflow',
+          'Key Tips',
+        ],
+        position: 'right',
+        existingShapes: [...shapes, videoShape],
+      };
+
+      const cardShapes = DiagramLayoutEngine.generateShapes(cardPayload);
+      const cardRects = cardShapes.filter((s) => s.shapeType === 'rectangle');
+      expect(cardRects.length).toBeGreaterThanOrEqual(1);
+
+      // Verify no collisions between any card shape and any tree shape
+      for (const cr of cardRects) {
+        const crLeft = cr.x;
+        const crRight = cr.x + (cr.width ?? 0);
+        const crTop = cr.y;
+        const crBottom = cr.y + (cr.height ?? 0);
+
+        for (const tr of rects) {
+          const trLeft = tr.x;
+          const trRight = tr.x + (tr.width ?? 0);
+          const trTop = tr.y;
+          const trBottom = tr.y + (tr.height ?? 0);
+
+          // Overlap check
+          const hasCollision =
+            crLeft < trRight - 5 &&
+            crRight > trLeft + 5 &&
+            crTop < trBottom - 5 &&
+            crBottom > trTop + 5;
+          expect(hasCollision).toBe(false);
+        }
+      }
     });
   });
 });

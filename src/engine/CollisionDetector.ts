@@ -303,6 +303,7 @@ export function getShapeBounds(shape: any): BoundingBox {
     case 'graph':
     case 'graph3d':
     case 'venn':
+    case 'quiz':
       return {
         x,
         y,
@@ -794,8 +795,28 @@ export function findFreePosition(
 
     const shouldOverflowHeadingToCol2 = isHeadingLike && remainingCol1Space < 130 && col2AvailableSpace >= 280;
 
-    if (!shouldOverflowHeadingToCol2 && candidateY + shapeSize.height <= SAFE_MAX_Y) {
-      return clampToBounds(COL1_X, candidateY, shapeSize.width, shapeSize.height, safeTopY);
+    if (!shouldOverflowHeadingToCol2) {
+      let curCol1Y = candidateY;
+      while (
+        curCol1Y + shapeSize.height <= SAFE_MAX_Y &&
+        collidesWithAny(COL1_X, curCol1Y, shapeSize.width, shapeSize.height, existingShapes, 10, false, isCandidateContainer)
+      ) {
+        const hit = existingShapes.filter((s) => {
+          const b = getShapeBounds(s);
+          return (
+            COL1_X < b.x + b.width + 10 &&
+            COL1_X + shapeSize.width > b.x - 10 &&
+            curCol1Y < b.y + b.height + 10 &&
+            curCol1Y + shapeSize.height > b.y - 10
+          );
+        });
+        if (hit.length === 0) break;
+        const maxHitBottom = Math.max(...hit.map((s) => getShapeBounds(s).y + getShapeBounds(s).height));
+        curCol1Y = maxHitBottom + minVerticalGap;
+      }
+      if (curCol1Y + shapeSize.height <= SAFE_MAX_Y) {
+        return clampToBounds(COL1_X, curCol1Y, shapeSize.width, shapeSize.height, safeTopY);
+      }
     }
   }
 
@@ -814,6 +835,24 @@ export function findFreePosition(
   } else {
     // First item in Column 2 always snaps cleanly to safeTopY (eliminates huge mid-column vertical gaps)
     col2Y = safeTopY;
+  }
+
+  while (
+    col2Y + shapeSize.height <= SAFE_MAX_Y &&
+    collidesWithAny(COL2_X, col2Y, shapeSize.width, shapeSize.height, existingShapes, 10, false, isCandidateContainer)
+  ) {
+    const hit = existingShapes.filter((s) => {
+      const b = getShapeBounds(s);
+      return (
+        COL2_X < b.x + b.width + 10 &&
+        COL2_X + shapeSize.width > b.x - 10 &&
+        col2Y < b.y + b.height + 10 &&
+        col2Y + shapeSize.height > b.y - 10
+      );
+    });
+    if (hit.length === 0) break;
+    const maxHitBottom = Math.max(...hit.map((s) => getShapeBounds(s).y + getShapeBounds(s).height));
+    col2Y = maxHitBottom + minVerticalGap;
   }
 
   if (col2Y + shapeSize.height <= SAFE_MAX_Y) {

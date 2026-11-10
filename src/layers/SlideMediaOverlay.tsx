@@ -54,6 +54,38 @@ export interface SlideMediaRuntimeState {
   shareAudioWithAI: boolean;
 }
 
+export interface VideoControlCommand {
+  action:
+    | 'play'
+    | 'pause'
+    | 'toggle_play'
+    | 'volume_up'
+    | 'volume_down'
+    | 'set_volume'
+    | 'mute'
+    | 'unmute'
+    | 'set_speed'
+    | 'seek_relative'
+    | 'seek_to'
+    | 'enable_subtitles'
+    | 'disable_subtitles'
+    | 'set_subtitle_language'
+    | 'set_audio_language'
+    | 'set_quality'
+    | 'maximize'
+    | 'minimize'
+    | 'resize'
+    | 'fullscreen';
+  video_id?: string;
+  volume?: number; // 0 to 100
+  speed?: number; // e.g. 0.25 to 2.0
+  time_sec?: number; // seconds to seek or delta
+  language?: string; // language code e.g. 'ar', 'en', 'es', 'de'
+  quality?: string; // 'hd1080', 'hd720', 'medium', 'auto'
+  width?: number;
+  height?: number;
+}
+
 export interface SlideMediaOverlayHandle {
   addMedia(item: Omit<SlideMediaItem, 'id'> & { id?: string }): string;
   updateMediaGeometry(id: string, x: number, y: number, width?: number, height?: number): void;
@@ -64,6 +96,10 @@ export interface SlideMediaOverlayHandle {
   getRuntimeStates(): SlideMediaRuntimeState[];
   hasPlayingVideo(): boolean;
   drawMediaToCanvas(ctx: CanvasRenderingContext2D): void;
+  controlMedia(
+    mediaIdOrSelector: string | undefined,
+    command: VideoControlCommand
+  ): { success: boolean; message: string; targetId?: string };
 }
 
 export interface SlideMediaOverlayProps {
@@ -89,6 +125,14 @@ interface VideoAudioGraph {
   processor: ScriptProcessorNode;
 }
 const videoAudioGraphMap = new WeakMap<HTMLVideoElement, VideoAudioGraph>();
+
+export function extractYouTubeId(url?: string): string | null {
+  if (!url) return null;
+  const match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (match) return match[1];
+  if (/^[a-zA-Z0-9_-]{11}$/.test(url.trim())) return url.trim();
+  return null;
+}
 
 function formatTimestamp(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '00:00';
@@ -149,9 +193,11 @@ interface MediaCardProps {
   onCommitGeometry: (id: string, x: number, y: number, width: number, height: number) => void;
   onRemove: (id: string) => void;
   onRegisterElement: (id: string, el: HTMLImageElement | HTMLVideoElement | null) => void;
+  onRegisterIframe?: (id: string, el: HTMLIFrameElement | null) => void;
   onUpdatePlayback: (id: string, state: PlaybackTelemetry) => void;
   onVisualChange: (reason: string) => void;
   onVideoAudioChunk?: (base64Pcm16k: string) => void;
+  onOpenFullScreen: (item: SlideMediaItem) => void;
 }
 
 const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaCard({
@@ -163,9 +209,11 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
   onCommitGeometry,
   onRemove,
   onRegisterElement,
+  onRegisterIframe,
   onUpdatePlayback,
   onVisualChange,
   onVideoAudioChunk,
+  onOpenFullScreen,
 }) {
   const [box, setBox] = useState({
     x: item.x,
@@ -173,6 +221,8 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
     width: item.width,
     height: item.height,
   });
+  const [isInteracting, setIsInteracting] = useState(false);
+  const [interactionType, setInteractionType] = useState<'drag' | 'resize' | null>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -254,9 +304,20 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
   // Dragging handler
   const startDrag = (e: React.PointerEvent) => {
     if (isAnnotationPassThrough) return;
+    if (e.button !== 0) return; // Only primary left-click initiates dragging
     e.stopPropagation();
     e.preventDefault();
     onSelect(item.id);
+    setIsInteracting(true);
+    setInteractionType('drag');
+
+    const targetEl = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      targetEl.setPointerCapture(pointerId);
+    } catch {
+      // Ignore if not supported
+    }
 
     const startClientX = e.clientX;
     const startClientY = e.clientY;
@@ -269,7 +330,26 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
     let latestX = origX;
     let latestY = origY;
 
+    const cleanup = () => {
+      try {
+        if (targetEl.hasPointerCapture(pointerId)) {
+          targetEl.releasePointerCapture(pointerId);
+        }
+      } catch {}
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('mouseup', onUp);
+      setIsInteracting(false);
+      setInteractionType(null);
+    };
+
     const onMove = (ev: PointerEvent) => {
+      // Auto-drop guard: if mouse button was released outside window or dropped, release immediately!
+      if (ev.buttons === 0) {
+        onUp();
+        return;
+      }
       const dx = (ev.clientX - startClientX) / safeZoom;
       const dy = (ev.clientY - startClientY) / safeZoom;
       latestX = Math.round(Math.max(10, Math.min(1910 - currW, origX + dx)));
@@ -277,22 +357,35 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
       setBox((prev) => ({ ...prev, x: latestX, y: latestY }));
     };
 
+    let isEnded = false;
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      if (isEnded) return;
+      isEnded = true;
+      cleanup();
       onCommitGeometry(item.id, latestX, latestY, currW, currH);
       onVisualChange('media_moved');
     };
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('mouseup', onUp);
   };
 
   // Corner Resize handler
   const startResize = (corner: 'nw' | 'ne' | 'sw' | 'se') => (e: React.PointerEvent) => {
+    if (e.button !== 0) return; // Only primary left-click
     e.stopPropagation();
     e.preventDefault();
     onSelect(item.id);
+    setIsInteracting(true);
+    setInteractionType('resize');
+
+    const targetEl = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      targetEl.setPointerCapture(pointerId);
+    } catch {}
 
     const startClientX = e.clientX;
     const startClientY = e.clientY;
@@ -302,7 +395,26 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
 
     let next = { ...orig };
 
+    const cleanup = () => {
+      try {
+        if (targetEl.hasPointerCapture(pointerId)) {
+          targetEl.releasePointerCapture(pointerId);
+        }
+      } catch {}
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('mouseup', onUp);
+      setIsInteracting(false);
+      setInteractionType(null);
+    };
+
     const onMove = (ev: PointerEvent) => {
+      // Auto-drop guard: if mouse button was released outside window or dropped, release immediately!
+      if (ev.buttons === 0) {
+        onUp();
+        return;
+      }
       const dx = (ev.clientX - startClientX) / safeZoom;
       const dy = (ev.clientY - startClientY) / safeZoom;
       const lockAspect = !ev.shiftKey;
@@ -344,15 +456,19 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
       setBox(next);
     };
 
+    let isEnded = false;
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      if (isEnded) return;
+      isEnded = true;
+      cleanup();
       onCommitGeometry(item.id, next.x, next.y, next.width, next.height);
       onVisualChange('media_resized');
     };
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('mouseup', onUp);
   };
 
   const togglePlayPause = (e?: React.MouseEvent | React.PointerEvent) => {
@@ -415,7 +531,7 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
           ? '0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(78, 205, 196, 0.22)'
           : '0 8px 24px rgba(0, 0, 0, 0.45)',
         backgroundColor: '#0d0e1c',
-        pointerEvents: isAnnotationPassThrough ? 'none' : 'auto',
+        pointerEvents: isAnnotationPassThrough || isInteracting ? 'none' : 'auto',
         userSelect: 'none',
         transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
@@ -440,9 +556,10 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
           gap: 8,
           opacity: showChrome ? 1 : 0,
           pointerEvents: showChrome ? 'auto' : 'none',
-          cursor: isAnnotationPassThrough ? 'default' : 'grab',
+          cursor: isAnnotationPassThrough ? 'default' : isInteracting ? 'grabbing' : 'grab',
           transition: 'opacity 0.16s ease',
           zIndex: 5,
+          touchAction: 'none',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
@@ -477,7 +594,7 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-          {item.mediaType === 'video' && (
+          {item.mediaType === 'video' && !extractYouTubeId(item.url) && (
             <button
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
@@ -508,6 +625,34 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
               {shareAudioWithAI ? '🧠🔊 AI Audio ON' : '🧠🔇 AI Audio OFF'}
             </button>
           )}
+
+          {/* Fullscreen Modal View Button */}
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenFullScreen(item);
+            }}
+            title="View Fullscreen"
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              border: 'none',
+              backgroundColor: 'rgba(255, 255, 255, 0.14)',
+              color: '#F8FAFC',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'background-color 0.15s ease',
+            }}
+          >
+            ⛶
+          </button>
 
           <button
             type="button"
@@ -547,9 +692,21 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
           overflow: 'hidden',
           position: 'relative',
           backgroundColor: '#090a14',
-          cursor: isAnnotationPassThrough ? 'crosshair' : item.mediaType === 'image' ? 'grab' : 'pointer',
+          cursor: isAnnotationPassThrough ? 'crosshair' : item.mediaType === 'image' ? (isInteracting ? 'grabbing' : 'grab') : 'pointer',
         }}
       >
+        {/* Full-bleed Transparent Shield during Drag / Resize: Prevents iframes or video from stealing mouse events */}
+        {isInteracting && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 9999,
+              backgroundColor: 'transparent',
+              cursor: interactionType === 'drag' ? 'grabbing' : 'nwse-resize',
+            }}
+          />
+        )}
         {item.mediaType === 'image' ? (
           <img
             ref={(el) => {
@@ -569,6 +726,24 @@ const SlideMediaCard: React.FC<MediaCardProps> = React.memo(function SlideMediaC
               pointerEvents: 'none',
             }}
           />
+        ) : extractYouTubeId(item.url) ? (
+          <div style={{ width: '100%', height: '100%', position: 'relative', backgroundColor: '#05060d' }}>
+            <iframe
+              ref={(el) => onRegisterIframe?.(item.id, el)}
+              id={`yt-iframe-${item.id}`}
+              src={`https://www.youtube-nocookie.com/embed/${extractYouTubeId(item.url)}?enablejsapi=1&rel=0`}
+              title={item.fileName || 'YouTube Video'}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              style={{
+                width: '100%',
+                height: '100%',
+                border: 'none',
+                borderRadius: 11,
+                pointerEvents: isAnnotationPassThrough ? 'none' : 'auto',
+              }}
+            />
+          </div>
         ) : (
           <>
             <video
@@ -829,12 +1004,33 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
   ) {
     const [items, setItemsState] = useState<SlideMediaItem[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [fullscreenItem, setFullscreenItem] = useState<SlideMediaItem | null>(null);
 
     const itemsRef = useRef<SlideMediaItem[]>([]);
     itemsRef.current = items;
 
     const elementsMapRef = useRef<Map<string, HTMLImageElement | HTMLVideoElement>>(new Map());
+    const iframesMapRef = useRef<Map<string, HTMLIFrameElement>>(new Map());
+    const volumeStateMapRef = useRef<Map<string, number>>(new Map());
     const playbackMapRef = useRef<Map<string, PlaybackTelemetry>>(new Map());
+    const ytThumbsRef = useRef<Map<string, HTMLImageElement>>(new Map());
+
+    const registerIframe = useCallback((id: string, el: HTMLIFrameElement | null) => {
+      if (el) {
+        iframesMapRef.current.set(id, el);
+      } else {
+        iframesMapRef.current.delete(id);
+      }
+    }, []);
+
+    useEffect(() => {
+      if (!fullscreenItem) return;
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') setFullscreenItem(null);
+      };
+      window.addEventListener('keydown', onKeyDown);
+      return () => window.removeEventListener('keydown', onKeyDown);
+    }, [fullscreenItem]);
 
     const registerElement = useCallback((id: string, el: HTMLImageElement | HTMLVideoElement | null) => {
       if (el) {
@@ -866,6 +1062,8 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
       (id: string) => {
         setItemsState((prev) => prev.filter((m) => m.id !== id));
         elementsMapRef.current.delete(id);
+        iframesMapRef.current.delete(id);
+        volumeStateMapRef.current.delete(id);
         playbackMapRef.current.delete(id);
         if (selectedId === id) setSelectedId(null);
         onRemoveMedia?.(id);
@@ -877,6 +1075,8 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
     const clear = useCallback(() => {
       setItemsState([]);
       elementsMapRef.current.clear();
+      iframesMapRef.current.clear();
+      volumeStateMapRef.current.clear();
       playbackMapRef.current.clear();
       setSelectedId(null);
     }, []);
@@ -924,6 +1124,43 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
 
     const drawMediaToCanvas = useCallback((ctx: CanvasRenderingContext2D) => {
       for (const m of itemsRef.current) {
+        const ytId = extractYouTubeId(m.url);
+        if (ytId) {
+          try {
+            let thumb = ytThumbsRef.current.get(ytId);
+            if (!thumb) {
+              thumb = new Image();
+              thumb.crossOrigin = 'anonymous';
+              thumb.src = `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`;
+              ytThumbsRef.current.set(ytId, thumb);
+            }
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(m.x, m.y, m.width, m.height);
+            ctx.clip();
+            if (thumb.complete && thumb.naturalWidth > 0) {
+              ctx.drawImage(thumb, m.x, m.y, m.width, m.height);
+            } else {
+              ctx.fillStyle = '#0f172a';
+              ctx.fillRect(m.x, m.y, m.width, m.height);
+            }
+            ctx.strokeStyle = '#FF0000';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(m.x, m.y, m.width, m.height);
+            const badge = `YOUTUBE: ${m.fileName || ytId}`;
+            ctx.font = 'bold 14px Inter, sans-serif';
+            const textW = Math.min(m.width - 12, ctx.measureText(badge).width + 24);
+            ctx.fillStyle = 'rgba(10, 12, 24, 0.88)';
+            ctx.fillRect(m.x + 6, m.y + 6, textW, 24);
+            ctx.fillStyle = '#FF0000';
+            ctx.fillText('▶', m.x + 12, m.y + 23);
+            ctx.fillStyle = '#F8FAFC';
+            ctx.fillText(badge, m.x + 30, m.y + 23, m.width - 36);
+            ctx.restore();
+          } catch {}
+          continue;
+        }
+
         const el = elementsMapRef.current.get(m.id);
         if (!el) continue;
 
@@ -981,33 +1218,372 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
       }
     }, []);
 
+    const isUpdatingGeometryRef = useRef(false);
+
     const handleCommitGeometry = useCallback(
       (id: string, x: number, y: number, width: number, height: number) => {
-        setItemsState((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, x, y, width, height } : m))
-        );
-        onUpdateGeometry?.(id, x, y, width, height);
+        if (isUpdatingGeometryRef.current) return;
+        isUpdatingGeometryRef.current = true;
+        try {
+          setItemsState((prev) =>
+            prev.map((m) => (m.id === id ? { ...m, x, y, width, height } : m))
+          );
+          onUpdateGeometry?.(id, x, y, width, height);
+        } finally {
+          isUpdatingGeometryRef.current = false;
+        }
       },
       [onUpdateGeometry]
     );
 
     const updateMediaGeometry = useCallback(
       (id: string, x: number, y: number, width?: number, height?: number) => {
-        setItemsState((prev) =>
-          prev.map((m) =>
-            m.id === id
-              ? {
-                  ...m,
-                  x,
-                  y,
-                  width: width !== undefined ? width : m.width,
-                  height: height !== undefined ? height : m.height,
+        if (isUpdatingGeometryRef.current) return;
+        isUpdatingGeometryRef.current = true;
+        try {
+          let hasChanged = false;
+          let finalW = width;
+          let finalH = height;
+          setItemsState((prev) =>
+            prev.map((m) => {
+              if (m.id === id) {
+                const w = width !== undefined ? width : m.width;
+                const h = height !== undefined ? height : m.height;
+                finalW = w;
+                finalH = h;
+                if (m.x === x && m.y === y && m.width === w && m.height === h) {
+                  return m;
                 }
-              : m
-          )
-        );
+                hasChanged = true;
+                return { ...m, x, y, width: w, height: h };
+              }
+              return m;
+            })
+          );
+          if (hasChanged) {
+            onUpdateGeometry?.(id, x, y, finalW ?? 640, finalH ?? 360);
+          }
+        } finally {
+          isUpdatingGeometryRef.current = false;
+        }
       },
-      []
+      [onUpdateGeometry]
+    );
+
+    const sendYouTubeCommand = useCallback((iframe: HTMLIFrameElement, func: string, args: any[] = []): boolean => {
+      try {
+        if (iframe.contentWindow) {
+          iframe.contentWindow.postMessage(
+            JSON.stringify({
+              event: 'command',
+              func,
+              args,
+            }),
+            '*'
+          );
+          return true;
+        }
+      } catch (err) {
+        console.warn('[SlideMediaOverlay] Failed to postMessage to YouTube iframe:', err);
+      }
+      return false;
+    }, []);
+
+    const controlMedia = useCallback(
+      (
+        mediaIdOrSelector: string | undefined,
+        command: VideoControlCommand
+      ): { success: boolean; message: string; targetId?: string } => {
+        const action = command.action;
+        const allItems = itemsRef.current;
+        const videoItems = allItems.filter((m) => m.mediaType === 'video');
+
+        if (videoItems.length === 0) {
+          return { success: false, message: 'No video items currently exist on the whiteboard slide.' };
+        }
+
+        let target: SlideMediaItem | undefined;
+        if (mediaIdOrSelector && !['latest', 'video', 'all', 'current'].includes(mediaIdOrSelector.trim().toLowerCase())) {
+          const s = mediaIdOrSelector.trim().toLowerCase();
+          target = videoItems.find(
+            (m) =>
+              m.id.toLowerCase() === s ||
+              m.mediaId.toLowerCase() === s ||
+              (m.fileName && m.fileName.toLowerCase().includes(s))
+          );
+        }
+
+        if (!target) {
+          if (selectedId) {
+            target = videoItems.find((m) => m.id === selectedId);
+          }
+          if (!target) {
+            target = videoItems[videoItems.length - 1];
+          }
+        }
+
+        if (!target) {
+          return { success: false, message: 'Could not resolve target video.' };
+        }
+
+        const ytId = extractYouTubeId(target.url);
+        let iframe: HTMLIFrameElement | null = null;
+        let videoEl: HTMLVideoElement | null = null;
+
+        if (ytId) {
+          iframe = iframesMapRef.current.get(target.id) || null;
+          if (!iframe) {
+            iframe = (document.getElementById(`yt-iframe-${target.id}`) as HTMLIFrameElement) || null;
+          }
+          if (!iframe && typeof document !== 'undefined') {
+            iframe = (document.querySelector(`iframe[src*="${ytId}"]`) as HTMLIFrameElement) || null;
+          }
+        } else {
+          const el = elementsMapRef.current.get(target.id);
+          if (el && el instanceof HTMLVideoElement) {
+            videoEl = el;
+          }
+        }
+
+        const targetLabel = target.fileName || target.id;
+
+        switch (action) {
+          case 'play': {
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'playVideo');
+            } else if (videoEl) {
+              videoEl.play().catch((err) => console.warn('[SlideMediaOverlay] Play error:', err));
+            }
+            onMediaVisualFrameChanged?.('video_play');
+            return { success: true, message: `Started playback for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'pause': {
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'pauseVideo');
+            } else if (videoEl) {
+              videoEl.pause();
+            }
+            onMediaVisualFrameChanged?.('video_pause');
+            return { success: true, message: `Paused video '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'toggle_play': {
+            if (ytId && iframe) {
+              const pb = playbackMapRef.current.get(target.id);
+              if (pb?.isPlaying) {
+                sendYouTubeCommand(iframe, 'pauseVideo');
+              } else {
+                sendYouTubeCommand(iframe, 'playVideo');
+              }
+            } else if (videoEl) {
+              if (videoEl.paused || videoEl.ended) {
+                videoEl.play().catch((err) => console.warn('[SlideMediaOverlay] Play error:', err));
+              } else {
+                videoEl.pause();
+              }
+            }
+            onMediaVisualFrameChanged?.('video_toggle_play');
+            return { success: true, message: `Toggled playback for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'volume_up': {
+            const curVol = volumeStateMapRef.current.get(target.id) ?? (ytId ? 100 : Math.round((videoEl?.volume ?? 1) * 100));
+            const newVol = Math.min(100, curVol + 15);
+            volumeStateMapRef.current.set(target.id, newVol);
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'unMute');
+              sendYouTubeCommand(iframe, 'setVolume', [newVol]);
+            } else if (videoEl) {
+              videoEl.muted = false;
+              videoEl.volume = newVol / 100;
+            }
+            return { success: true, message: `Volume raised to ${newVol}% for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'volume_down': {
+            const curVol = volumeStateMapRef.current.get(target.id) ?? (ytId ? 100 : Math.round((videoEl?.volume ?? 1) * 100));
+            const newVol = Math.max(0, curVol - 15);
+            volumeStateMapRef.current.set(target.id, newVol);
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'setVolume', [newVol]);
+            } else if (videoEl) {
+              videoEl.volume = newVol / 100;
+            }
+            return { success: true, message: `Volume lowered to ${newVol}% for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'set_volume': {
+            const newVol = Math.max(0, Math.min(100, command.volume ?? 100));
+            volumeStateMapRef.current.set(target.id, newVol);
+            if (ytId && iframe) {
+              if (newVol > 0) sendYouTubeCommand(iframe, 'unMute');
+              sendYouTubeCommand(iframe, 'setVolume', [newVol]);
+            } else if (videoEl) {
+              if (newVol > 0) videoEl.muted = false;
+              videoEl.volume = newVol / 100;
+            }
+            return { success: true, message: `Volume set to ${newVol}% for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'mute': {
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'mute');
+            } else if (videoEl) {
+              videoEl.muted = true;
+            }
+            return { success: true, message: `Muted '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'unmute': {
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'unMute');
+              const lastVol = volumeStateMapRef.current.get(target.id) ?? 100;
+              sendYouTubeCommand(iframe, 'setVolume', [lastVol]);
+            } else if (videoEl) {
+              videoEl.muted = false;
+            }
+            return { success: true, message: `Unmuted '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'set_speed': {
+            const speed = Math.max(0.25, Math.min(2.0, command.speed ?? 1.0));
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'setPlaybackRate', [speed]);
+            } else if (videoEl) {
+              videoEl.playbackRate = speed;
+            }
+            return { success: true, message: `Playback speed set to ${speed}x for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'seek_to': {
+            const sec = Math.max(0, command.time_sec ?? 0);
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'seekTo', [sec, true]);
+            } else if (videoEl) {
+              videoEl.currentTime = sec;
+            }
+            onMediaVisualFrameChanged?.('video_seeked');
+            return { success: true, message: `Seeked to ${formatTimestamp(sec)} in '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'seek_relative': {
+            const delta = command.time_sec ?? 5;
+            if (ytId && iframe) {
+              const pb = playbackMapRef.current.get(target.id);
+              const cur = pb?.currentTimeSec ?? 0;
+              const nextTime = Math.max(0, cur + delta);
+              sendYouTubeCommand(iframe, 'seekTo', [nextTime, true]);
+            } else if (videoEl) {
+              videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) + delta);
+            }
+            onMediaVisualFrameChanged?.('video_seeked');
+            return { success: true, message: `Seeked ${delta >= 0 ? '+' : ''}${delta}s in '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'enable_subtitles': {
+            const lang = (command.language || 'en').toLowerCase();
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'loadModule', ['captions']);
+              sendYouTubeCommand(iframe, 'setOption', ['captions', 'track', { languageCode: lang }]);
+            } else if (videoEl) {
+              for (let i = 0; i < videoEl.textTracks.length; i++) {
+                const tr = videoEl.textTracks[i];
+                if (tr.language.toLowerCase().startsWith(lang) || !command.language) {
+                  tr.mode = 'showing';
+                }
+              }
+            }
+            return { success: true, message: `Enabled subtitles (${lang}) for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'disable_subtitles': {
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'unloadModule', ['captions']);
+              sendYouTubeCommand(iframe, 'setOption', ['captions', 'track', {}]);
+            } else if (videoEl) {
+              for (let i = 0; i < videoEl.textTracks.length; i++) {
+                videoEl.textTracks[i].mode = 'hidden';
+              }
+            }
+            return { success: true, message: `Disabled subtitles for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'set_subtitle_language': {
+            const lang = (command.language || 'en').toLowerCase();
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'loadModule', ['captions']);
+              sendYouTubeCommand(iframe, 'setOption', ['captions', 'track', { languageCode: lang }]);
+            } else if (videoEl) {
+              for (let i = 0; i < videoEl.textTracks.length; i++) {
+                const tr = videoEl.textTracks[i];
+                if (tr.language.toLowerCase() === lang || tr.language.toLowerCase().startsWith(lang) || tr.label.toLowerCase().includes(lang)) {
+                  tr.mode = 'showing';
+                } else {
+                  tr.mode = 'hidden';
+                }
+              }
+            }
+            return { success: true, message: `Set subtitle language to '${lang}' for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'set_audio_language': {
+            const lang = (command.language || 'en').toLowerCase();
+            if (videoEl) {
+              const audioTracks = (videoEl as any).audioTracks;
+              if (audioTracks && audioTracks.length > 0) {
+                for (let i = 0; i < audioTracks.length; i++) {
+                  const tr = audioTracks[i];
+                  tr.enabled = tr.language?.toLowerCase() === lang || tr.label?.toLowerCase().includes(lang);
+                }
+                return { success: true, message: `Set audio dubbing track to '${lang}' for local video.`, targetId: target.id };
+              }
+            }
+            if (ytId) {
+              return { success: true, message: `YouTube audio dubbing language requested (${lang}). Note: YouTube embeds manage multi-audio tracks natively via user player settings.`, targetId: target.id };
+            }
+            return { success: true, message: `Audio dubbing selection requested for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'set_quality': {
+            const q = command.quality || 'auto';
+            if (ytId && iframe) {
+              sendYouTubeCommand(iframe, 'setPlaybackQuality', [q]);
+              sendYouTubeCommand(iframe, 'setPlaybackQualityRange', [q, q]);
+            }
+            return { success: true, message: `Requested quality level '${q}' for '${targetLabel}'.`, targetId: target.id };
+          }
+
+          case 'maximize': {
+            updateMediaGeometry(target.id, 160, 100, 1600, 880);
+            onMediaVisualFrameChanged?.('video_maximized');
+            return { success: true, message: `Maximized video '${targetLabel}' to 1600x880.`, targetId: target.id };
+          }
+
+          case 'minimize': {
+            updateMediaGeometry(target.id, 1340, 680, 500, 320);
+            onMediaVisualFrameChanged?.('video_minimized');
+            return { success: true, message: `Minimized video '${targetLabel}' to 500x320.`, targetId: target.id };
+          }
+
+          case 'resize': {
+            const w = Math.max(200, Math.min(1800, command.width ?? target.width));
+            const h = Math.max(120, Math.min(1000, command.height ?? target.height));
+            updateMediaGeometry(target.id, target.x, target.y, w, h);
+            onMediaVisualFrameChanged?.('video_resized');
+            return { success: true, message: `Resized video '${targetLabel}' to ${w}x${h}.`, targetId: target.id };
+          }
+
+          case 'fullscreen': {
+            setFullscreenItem(target);
+            return { success: true, message: `Opened video '${targetLabel}' in fullscreen view.`, targetId: target.id };
+          }
+
+          default:
+            return { success: false, message: `Unknown video control action '${action}'.`, targetId: target.id };
+        }
+      },
+      [selectedId, sendYouTubeCommand, updateMediaGeometry, onMediaVisualFrameChanged]
     );
 
     useImperativeHandle(
@@ -1022,6 +1598,7 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
         getRuntimeStates,
         hasPlayingVideo,
         drawMediaToCanvas,
+        controlMedia,
       }),
       [
         addMedia,
@@ -1033,6 +1610,7 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
         getRuntimeStates,
         hasPlayingVideo,
         drawMediaToCanvas,
+        controlMedia,
       ]
     );
 
@@ -1067,11 +1645,145 @@ export const SlideMediaOverlay = forwardRef<SlideMediaOverlayHandle, SlideMediaO
             onCommitGeometry={handleCommitGeometry}
             onRemove={removeMedia}
             onRegisterElement={registerElement}
+            onRegisterIframe={registerIframe}
             onUpdatePlayback={updatePlayback}
             onVisualChange={(reason) => onMediaVisualFrameChanged?.(reason)}
             onVideoAudioChunk={onVideoAudioChunk}
+            onOpenFullScreen={(m) => setFullscreenItem(m)}
           />
         ))}
+
+        {/* Global Fullscreen Modal for Images & Videos with Close Button */}
+        {fullscreenItem && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 999999,
+              backgroundColor: 'rgba(7, 9, 19, 0.94)',
+              backdropFilter: 'blur(10px)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'auto',
+            }}
+            onClick={() => setFullscreenItem(null)}
+          >
+            {/* Top Bar with Title & Close Button */}
+            <div
+              style={{
+                position: 'absolute',
+                top: 20,
+                left: 30,
+                right: 30,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                zIndex: 1000000,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  color: '#F8FAFC',
+                  fontSize: 16,
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <span>{fullscreenItem.mediaType === 'image' ? '🖼️' : '🎬'}</span>
+                <span>
+                  {fullscreenItem.fileName ||
+                    (fullscreenItem.mediaType === 'image' ? 'Image View' : 'Video Player')}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullscreenItem(null)}
+                title="Close Fullscreen (Esc)"
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(255, 107, 107, 0.25)',
+                  border: '1px solid #FF6B6B',
+                  color: '#FF6B6B',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <span>✕</span>
+                <span>Close</span>
+              </button>
+            </div>
+
+            {/* Content Display */}
+            <div
+              style={{
+                maxWidth: '92vw',
+                maxHeight: '85vh',
+                width: 'auto',
+                height: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {fullscreenItem.mediaType === 'image' ? (
+                <img
+                  src={fullscreenItem.url}
+                  alt={fullscreenItem.fileName}
+                  style={{
+                    maxWidth: '92vw',
+                    maxHeight: '85vh',
+                    objectFit: 'contain',
+                    borderRadius: 12,
+                    boxShadow: '0 20px 50px rgba(0,0,0,0.8)',
+                  }}
+                />
+              ) : extractYouTubeId(fullscreenItem.url) ? (
+                <iframe
+                  src={`https://www.youtube-nocookie.com/embed/${extractYouTubeId(
+                    fullscreenItem.url
+                  )}?autoplay=1&rel=0`}
+                  title={fullscreenItem.fileName}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                  style={{
+                    width: '88vw',
+                    height: '80vh',
+                    border: 'none',
+                    borderRadius: 12,
+                    boxShadow: '0 20px 50px rgba(0,0,0,0.8)',
+                  }}
+                />
+              ) : (
+                <video
+                  src={fullscreenItem.url}
+                  controls
+                  autoPlay
+                  style={{
+                    maxWidth: '92vw',
+                    maxHeight: '85vh',
+                    borderRadius: 12,
+                    boxShadow: '0 20px 50px rgba(0,0,0,0.8)',
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

@@ -61,13 +61,42 @@ export function deriveSmartSessionTitle(
   const trimmed = (currentTitle || '').trim();
   const isDefault = !trimmed || trimmed === 'Untitled Whiteboard' || trimmed === 'Untitled Session';
 
+  // If user manually customized the title, keep it strictly
   if (!isDefault && !isAutoTitled) {
     return { title: trimmed, isAutoTitled: false };
   }
 
-  // 1. Prefer Slide 1 topic header if present
+  // If an established substantive auto-title already exists (e.g. from an embedded video, initial topic, or user prompt),
+  // PRESERVE IT! Never let a secondary tutor drawing in a corner overwrite an already established lesson title!
+  if (!isDefault && trimmed && !/^(Whiteboard\s+)?Slide\s+\d+$/i.test(trimmed)) {
+    return { title: trimmed, isAutoTitled: true };
+  }
+
+  // 1. Prefer Slide 1 primary video / media title or diagram root
   const firstSlide = pages?.[0];
   if (firstSlide) {
+    // Media (YouTube video / uploaded image) is the absolute highest priority topic anchor
+    const firstMedia = (firstSlide.shapes || []).find(
+      (s) => s.shapeType === 'image' || s.shapeType === 'video'
+    );
+    if (firstMedia?.options?.media?.fileName) {
+      return {
+        title: firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 48),
+        isAutoTitled: true,
+      };
+    }
+
+    // Diagram title if present
+    const firstDiagram = (firstSlide.shapes || []).find(
+      (s) => s.shapeType === 'diagram' || (s.shapeType === 'rectangle' && (s.y ?? 0) <= 160 && s.options?.label)
+    );
+    if (firstDiagram?.options?.label) {
+      return {
+        title: firstDiagram.options.label.slice(0, 48),
+        isAutoTitled: true,
+      };
+    }
+
     const headerHw = (firstSlide.handwriting || []).find(
       (h) => h.style === 'title' || (h.position && h.position.y <= 150)
     );

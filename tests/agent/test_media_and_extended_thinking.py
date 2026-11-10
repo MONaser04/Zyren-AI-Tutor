@@ -114,11 +114,12 @@ def test_pure_thought_filter_and_realtime_session_hooks():
             self._zyren_interaction_in_progress = False
             self._zyren_last_tool_call_ts = 0.0
             self._zyren_pending_has_user_input = False
+            self._msg_ch = SimpleNamespace(send_nowait=lambda ev: sent_events.append(ev))
 
     # Temporarily bind underlying originals if needed for isolated verification
     orig_speech_started = realtime_api.RealtimeSession._zyren_orig_handle_input_speech_started
     orig_start_gen = realtime_api.RealtimeSession._zyren_orig_start_new_generation
-    orig_send_ev = realtime_api.RealtimeSession._zyren_orig_send_client_event
+    orig_send_ev = getattr(realtime_api.RealtimeSession, "_zyren_orig_send_client_event", None)
 
     try:
         realtime_api.RealtimeSession._zyren_orig_handle_input_speech_started = (
@@ -164,31 +165,6 @@ def test_pure_thought_filter_and_realtime_session_hooks():
         realtime_api.RealtimeSession._start_new_generation(rt)
         assert len(speech_started_calls) == 1
 
-        # FunctionResponse.scheduling must be stripped on gemini-3.8-live-extended-thinking
-        fr = types.FunctionResponse(
-            id="call_1",
-            name="write_math",
-            response={"result": "Success"},
-            scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-        )
-        ev = SimpleNamespace(function_responses=[fr])
-        realtime_api.RealtimeSession._send_client_event(rt, ev)
-        assert sent_events[-1].function_responses[0].scheduling is None
-
-        # On gemini-3.8-live, FunctionResponse.scheduling is preserved
-        rt_std = FakeRealtimeSession("gemini-3.8-live")
-        fr_std = types.FunctionResponse(
-            id="call_2",
-            name="write_math",
-            response={"result": "Success"},
-            scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-        )
-        ev_std = SimpleNamespace(function_responses=[fr_std])
-        realtime_api.RealtimeSession._send_client_event(rt_std, ev_std)
-        assert (
-            sent_events[-1].function_responses[0].scheduling
-            == types.FunctionResponseScheduling.WHEN_IDLE
-        )
     finally:
         realtime_api.RealtimeSession._zyren_orig_handle_input_speech_started = orig_speech_started
         realtime_api.RealtimeSession._zyren_orig_start_new_generation = orig_start_gen

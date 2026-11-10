@@ -201,3 +201,165 @@ def resolve_media_file_path(media_id_or_url: str) -> Optional[Tuple[Path, str, s
             return cand, mime, cand.name
 
     return None
+
+
+# ─── Multi-Provider & Intermediate Model Storage Helpers ───────────────────────
+
+PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
+    "nvidia_nim": "https://integrate.api.nvidia.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "clinepass": "https://api.cline.bot/v1",
+    "xai": "https://api.x.ai/v1",
+    "qwen_cloud_token": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "qwen_cloud_coding": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "together": "https://api.together.xyz/v1",
+    "deepinfra": "https://api.deepinfra.com/v1/openai",
+    "siliconflow": "https://api.siliconflow.cn/v1",
+    "nebius": "https://api.studio.nebius.ai/v1",
+    "chutes": "https://chutes.ai/v1",
+    "featherless": "https://api.featherless.ai/v1",
+    "agnes": "https://api.agnes-ai.com/v1",
+    "zenmux": "https://api.zenmux.ai/v1",
+    "wandb": "https://api.wandb.ai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "mistral_codestral": "https://codestral.mistral.ai/v1",
+    "opencode_zen": "https://api.opencode.ai/v1",
+    "opencode_go": "https://go.opencode.ai/v1",
+    "vercel_ai_gateway": "https://ai.vercel.app/v1",
+    "huggingface": "https://api-inference.huggingface.co/v1",
+    "cohere": "https://api.cohere.com/v2",
+    "github_models": "https://models.inference.ai.azure.com",
+    "water": "https://api.water.ai/v1",
+    "kimi": "https://api.moonshot.cn/v1",
+    "kimi_code": "https://api.moonshot.cn/v1",
+    "kelo": "https://api.kelo.ai/v1",
+    "minimax": "https://api.minimax.chat/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "sambanova": "https://api.sambanova.ai/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
+    "novita": "https://api.novita.ai/v1",
+    "zai_coding": "https://open.bigmodel.cn/api/paas/v4",
+    "zai_api": "https://open.bigmodel.cn/api/paas/v4",
+    "tokenrouter": "https://api.tokenrouter.io/v1",
+    "nararoute": "https://router.bynara.id/v1",
+    "poolside": "https://api.poolside.ai/v1",
+    "llm7": "https://api.llm7.io/v1",
+    "ollama_cloud": "https://api.ollama.com/v1",
+    "lmstudio": "http://localhost:1234/v1",
+    "llamacpp": "http://localhost:8080/v1",
+    "ollama": "http://localhost:11434/v1",
+    "custom_openai_compatible": "http://localhost:8000/v1",
+}
+
+PROVIDER_ENV_KEYS: dict[str, str] = {
+    "nvidia_nim": "NVIDIA_NIM_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "clinepass": "CLINE_API_KEY",
+    "xai": "XAI_API_KEY",
+    "qwen_cloud_token": "QWENCLOUD_API_KEY",
+    "qwen_cloud_coding": "QWENCLOUD_CODING_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "deepinfra": "DEEPINFRA_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "nebius": "NEBIUS_API_KEY",
+    "chutes": "CHUTES_API_KEY",
+    "featherless": "FEATHERLESS_API_KEY",
+    "agnes": "AGNES_API_KEY",
+    "zenmux": "ZENMUX_API_KEY",
+    "wandb": "WANDB_API_KEY",
+    "azure_openai": "AZURE_OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "google_vertex": "VERTEX_PROJECT_ID",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "mistral_codestral": "CODESTRAL_API_KEY",
+    "opencode_zen": "OPENCODE_API_KEY",
+    "opencode_go": "OPENCODE_GO_API_KEY",
+    "vercel_ai_gateway": "AI_GATEWAY_API_KEY",
+    "amazon_bedrock": "AWS_BEARER_TOKEN_BEDROCK",
+    "huggingface": "HUGGINGFACE_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "github_models": "GITHUB_MODELS_TOKEN",
+    "water": "WATER_API_KEY",
+    "kimi": "KIMI_API_KEY",
+    "kimi_code": "KIMI_CODE_API_KEY",
+    "kelo": "KELO_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "sambanova": "SAMBANOVA_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "novita": "NOVITA_API_KEY",
+    "cloudflare": "CLOUDFLARE_API_TOKEN",
+    "zai_coding": "ZAI_CODING_API_KEY",
+    "zai_api": "ZAI_API_KEY",
+    "tokenrouter": "TOKENROUTER_API_KEY",
+    "nararoute": "NARAROUTE_API_KEY",
+    "poolside": "POOLSIDE_API_KEY",
+    "llm7": "LLM7_API_KEY",
+    "ollama_cloud": "OLLAMA_API_KEY",
+    "custom_openai_compatible": "CUSTOM_OPENAI_API_KEY",
+}
+
+
+def get_intermediate_model_config() -> dict:
+    """
+    Returns the persistent Intermediate Executive Model configuration:
+    {
+      'enabled': bool,
+      'providerId': str,
+      'modelId': str,
+      'thinkingLevel': str ('off' | 'minimal' | 'low' | 'medium' | 'high'),
+      'customBaseUrl': str
+    }
+    """
+    cfg = read_app_config()
+    stored = cfg.get("intermediateModel") or {}
+    return {
+        "enabled": bool(stored.get("enabled", False)),
+        "providerId": str(stored.get("providerId") or "nvidia_nim").strip(),
+        "modelId": str(stored.get("modelId") or "nvidia/nemotron-4-340b-instruct").strip(),
+        "thinkingLevel": str(stored.get("thinkingLevel") or "high").strip().lower(),
+        "customBaseUrl": str(stored.get("customBaseUrl") or "").strip(),
+    }
+
+
+def get_provider_credentials(provider_id: str) -> dict:
+    """
+    Retrieves effective API key, base URL, and configuration for a given provider.
+    Priority:
+      1. Stored in config.json under providers[provider_id]
+      2. Environment variable fallback (from .env or os.environ)
+    """
+    pid = (provider_id or "").strip()
+    cfg = read_app_config()
+    stored_providers = cfg.get("providers") or {}
+    prov_data = stored_providers.get(pid) or {}
+
+    stored_key = str(prov_data.get("apiKey") or "").strip()
+    env_var_name = PROVIDER_ENV_KEYS.get(pid, "")
+    env_key = (os.environ.get(env_var_name) or "").strip() if env_var_name else ""
+    effective_key = stored_key or env_key
+
+    stored_base = str(prov_data.get("baseUrl") or "").strip()
+    default_base = PROVIDER_DEFAULT_BASE_URLS.get(pid, "")
+    effective_base = stored_base or default_base
+
+    selected_model = str(prov_data.get("selectedModel") or "").strip()
+    thinking_level = str(prov_data.get("thinkingLevel") or "high").strip().lower()
+
+    is_local = pid in ("lmstudio", "llamacpp", "ollama")
+    is_configured = is_local or len(effective_key) > 3
+
+    return {
+        "providerId": pid,
+        "apiKey": effective_key,
+        "baseUrl": effective_base,
+        "configured": is_configured,
+        "selectedModel": selected_model,
+        "thinkingLevel": thinking_level,
+        "cachedModels": prov_data.get("cachedModels") or [],
+    }

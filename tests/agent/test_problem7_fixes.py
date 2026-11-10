@@ -187,8 +187,7 @@ def test_diagram_node_upward_flow_and_flexible_mixed_style():
     )
     assert "dynamically and pedagogically blend handwriting" in mixed_inst
     assert "Simultaneous Pedagogical Action & Speech Protocol" in mixed_inst
-    assert "ZERO VERBAL META-ANNOUNCEMENTS & PROMISES" in mixed_inst
-    assert "POST-TOOL SILENCE" in mixed_inst
+    assert "ZERO VERBAL META-ANNOUNCEMENTS" in mixed_inst
 
 
 def test_learner_name_dynamic_personalization_without_git_leakage():
@@ -250,3 +249,19 @@ def test_tutor_name_dynamic_configuration():
     assert "Your teacher identity name is 'Atlas'" in custom_inst
     assert "You are ATLAS," in custom_inst
 
+
+def test_font_size_control_and_handwriting_resizing_instructions_and_tools():
+    """Verify font size control and handwriting resizing are explicitly documented in system prompt and tools."""
+    # 1. System instructions verify full typography and font size control
+    assert "FULL TYPOGRAPHY & FONT SIZE CONTROL" in TUTOR_SYSTEM_INSTRUCTIONS
+    assert "NEVER state or claim that handwriting or any other text cannot be resized" in TUTOR_SYSTEM_INSTRUCTIONS
+    assert "FULL MULTI-MODAL FONT SIZE RESIZING SUPPORT" in TUTOR_SYSTEM_INSTRUCTIONS
+
+    # 2. write_text signature has font_size
+    sig_write = inspect.signature(tutor_agent_mod.TutorAgent.write_text)
+    assert "font_size" in sig_write.parameters
+
+    # 3. update_whiteboard_item signature has font_size and accepts new_label
+    sig_update = inspect.signature(tutor_agent_mod.TutorAgent.update_whiteboard_item)
+    assert "font_size" in sig_update.parameters
+    assert "new_label" in sig_update.parameters

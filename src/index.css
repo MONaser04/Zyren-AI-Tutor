@@ -32,8 +32,22 @@ html, body {
   background-color: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-body);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+/* Whiteboard Viewport & Interactive Layer Vector Font Crispness */
+.whiteboard-viewport,
+.quiz-overlay-container,
+.whiteboard-viewport * {
+  -webkit-font-smoothing: subpixel-antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.whiteboard-viewport {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 #root {
@@ -308,5 +322,14 @@ button:focus-visible {
   50% {
     opacity: 1;
     transform: scale(1.08);
+  }
+}
+
+@keyframes zyrenSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }

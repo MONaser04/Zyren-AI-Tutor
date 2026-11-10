@@ -7,8 +7,10 @@ import { MathOverlay, type MathOverlayHandle } from '../layers/MathOverlay';
 import { GraphOverlay, type GraphOverlayHandle } from '../layers/GraphOverlay';
 import { Graph3DOverlay, type Graph3DOverlayHandle } from '../layers/Graph3DOverlay';
 import { VennOverlay, type VennOverlayHandle } from '../layers/VennOverlay';
+import { QuizOverlay, type QuizOverlayHandle } from '../layers/QuizOverlay';
 import { SlideMediaOverlay, type SlideMediaOverlayHandle } from '../layers/SlideMediaOverlay';
 import { SyncEngine } from '../engine/SyncEngine';
+import * as CollisionDetector from '../engine/CollisionDetector';
 import { useTeacherStore } from '../store/useTeacherStore';
 import { SlidePanel, type WhiteboardPage, type UserDrawingPath, type UserDrawingText } from './SlidePanel';
 import { UserDrawingLayer } from './UserDrawingLayer';
@@ -20,6 +22,8 @@ import {
 } from './whiteboardSession';
 import { VoiceSelectorModal, ALL_GEMINI_VOICES } from './VoiceSelectorModal';
 import { ModelSelectorModal, SUPPORTED_MODELS } from './ModelSelectorModal';
+import { ProvidersModal } from './ProvidersModal';
+import type { IntermediateModelSettings } from '../types/providers';
 import {
   PersonaSelectorModal,
   VERBOSITY_OPTIONS,
@@ -150,6 +154,7 @@ export function Whiteboard({
   const graphRef = useRef<GraphOverlayHandle>(null);
   const graph3dRef = useRef<Graph3DOverlayHandle>(null);
   const vennRef = useRef<VennOverlayHandle>(null);
+  const quizRef = useRef<QuizOverlayHandle>(null);
   const mediaRef = useRef<SlideMediaOverlayHandle>(null);
   const engineRef = useRef<SyncEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -161,6 +166,9 @@ export function Whiteboard({
   const [isCanvasDragOver, setIsCanvasDragOver] = useState<boolean>(false);
   const currentStyleRef = useRef(currentStyle);
   currentStyleRef.current = currentStyle;
+
+  const room = useMaybeRoomContext();
+  const [saveToast, setSaveToast] = useState<string | null>(null);
 
   const [hasStarted, setHasStarted] = useState(false);
   const [toolMode, setToolMode] = useState<'pointer' | 'pen' | 'text' | 'eraser'>('pointer');
@@ -174,6 +182,43 @@ export function Whiteboard({
   const [isPersonaModalOpen, setIsPersonaModalOpen] = useState(false);
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isProvidersModalOpen, setIsProvidersModalOpen] = useState(false);
+  const [isInternetAccessEnabled, setIsInternetAccessEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('zyren_internet_access');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  const toggleInternetAccess = useCallback(() => {
+    setIsInternetAccessEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem('zyren_internet_access', String(next));
+      if (room && room.state === 'connected' && room.localParticipant) {
+        try {
+          const payload = {
+            type: 'update_internet_access',
+            enabled: next,
+          };
+          const encoder = new TextEncoder();
+          room.localParticipant.publishData(encoder.encode(JSON.stringify(payload)), { reliable: true });
+        } catch (e) {
+          console.warn('[Whiteboard] Failed to publish internet access update:', e);
+        }
+      }
+      setSaveToast(next ? '🌐 Internet Access: Enabled (Web & Images Active)' : '🌐 Internet Access: Disabled (Offline Mode)');
+      setTimeout(() => setSaveToast(null), 3000);
+      return next;
+    });
+  }, [room]);
+  const [intermediateModelSettings, setIntermediateModelSettings] = useState<IntermediateModelSettings | null>(null);
+
+  useEffect(() => {
+    fetch('/api/intermediate-model')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.settings) setIntermediateModelSettings(data.settings);
+      })
+      .catch(() => {});
+  }, []);
   const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(false);
   const [isStyleMenuOpen, setIsStyleMenuOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -303,8 +348,8 @@ export function Whiteboard({
     const panY = topBarHeight + (availHeight - VIRTUAL_HEIGHT * fitZoom) / 2;
 
     setTransform({
-      zoom: fitZoom,
-      pan: { x: panX, y: panY },
+      zoom: Number(fitZoom.toFixed(3)),
+      pan: { x: Math.round(panX), y: Math.round(panY) },
     });
   }, []);
 
@@ -321,7 +366,6 @@ export function Whiteboard({
     };
   }, [autoFitCanvas]);
 
-  const room = useMaybeRoomContext();
   const { setTelemetry, showDebugOverlay, toggleDebugOverlay } = useTeacherStore();
 
   // Track LiveKit Agent presence
@@ -816,37 +860,56 @@ export function Whiteboard({
     const currentHandwriting = engine.getDrawnHandwriting();
 
     let autoTitle = '';
-    const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
-    if (titleH?.text) {
-      autoTitle = titleH.text;
+    // Priority 1: Slide media asset (embedded YouTube video / high-res image)
+    const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+    if (firstMedia?.options?.media?.fileName) {
+      autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 48);
     } else {
-      const firstText = currentShapes.find((s) => s.shapeType === 'text');
-      if (firstText?.options?.text) {
-        autoTitle = firstText.options.text;
+      // Priority 2: Structured diagram root header
+      const firstDiagram = currentShapes.find(
+        (s) => s.shapeType === 'diagram' || (s.shapeType === 'rectangle' && (s.y ?? 0) <= 160 && s.options?.label)
+      );
+      if (firstDiagram?.options?.label) {
+        autoTitle = firstDiagram.options.label.slice(0, 48);
       } else {
-        const firstMath = currentShapes.find((s) => s.shapeType === 'math');
-        if (firstMath?.options?.latex) {
-          autoTitle = firstMath.options.latex.slice(0, 35);
+        // Priority 3: Explicit title handwriting
+        const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
+        if (titleH?.text) {
+          autoTitle = titleH.text.slice(0, 48);
         } else {
-          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
-          if (firstMedia?.options?.media?.fileName) {
-            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          // Priority 4: Math equation
+          const firstMath = currentShapes.find((s) => s.shapeType === 'math');
+          if (firstMath?.options?.latex) {
+            autoTitle = firstMath.options.latex.slice(0, 35);
+          } else {
+            // Priority 5: First text note
+            const firstText = currentShapes.find((s) => s.shapeType === 'text');
+            if (firstText?.options?.text) {
+              autoTitle = firstText.options.text.slice(0, 40);
+            }
           }
         }
       }
     }
 
-    return pagesRef.current.map((p, idx) =>
-      idx === activePageIndexRef.current
-        ? {
-            ...p,
-            title: autoTitle || p.title || `Slide ${p.pageNumber}`,
-            shapes: [...currentShapes],
-            handwriting: [...currentHandwriting],
-          }
-        : p
-    );
+    return pagesRef.current.map((p, idx) => {
+      if (idx === activePageIndexRef.current) {
+        const existingTitle = (p.title || '').trim();
+        const hasSubstantiveTitle = existingTitle && !/^(Whiteboard\s+)?Slide\s+\d+$/i.test(existingTitle);
+        const resolvedTitle = hasSubstantiveTitle ? existingTitle : (autoTitle || `Slide ${p.pageNumber}`);
+        return {
+          ...p,
+          title: resolvedTitle,
+          shapes: [...currentShapes],
+          handwriting: [...currentHandwriting],
+        };
+      }
+      return p;
+    });
   }, []);
+
+  const lastBroadcastedPayloadJsonRef = useRef<string>('');
+  const boardSyncDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const broadcastBoardStateSync = useCallback(
     (customPages?: WhiteboardPage[], customActiveIndex?: number, customTitle?: string) => {
@@ -870,8 +933,7 @@ export function Whiteboard({
                 (s) =>
                   s.shapeType === 'math' ||
                   (s.shapeType === 'text' &&
-                    /\\[a-zA-Z]+|[_\^=+\-*/\\]/.test(s.options?.text || '') &&
-                    (s.options?.text || '').includes('\\'))
+                    CollisionDetector.isStandaloneMathExpression(s.options?.text || ''))
               )
               .map((s) => s.options?.latex || s.options?.text || ''),
             plainTextNotes: [
@@ -879,10 +941,7 @@ export function Whiteboard({
                 .filter(
                   (s) =>
                     s.shapeType === 'text' &&
-                    !(
-                      /\\[a-zA-Z]+|[_\^=+\-*/\\]/.test(s.options?.text || '') &&
-                      (s.options?.text || '').includes('\\')
-                    )
+                    !CollisionDetector.isStandaloneMathExpression(s.options?.text || '')
                 )
                 .map((s) => s.options?.text || ''),
               ...(activePage?.handwriting || []).map((h) => h.text),
@@ -956,6 +1015,7 @@ export function Whiteboard({
                   };
                 });
             })(),
+            spatialLayout: engineRef.current ? engineRef.current.getSpatialLayout() : undefined,
           },
           allSlidesSummary: allPages.map((p, idx) => ({
             pageNumber: p.pageNumber || idx + 1,
@@ -990,11 +1050,114 @@ export function Whiteboard({
           payload,
         };
 
-        const encoded = new TextEncoder().encode(JSON.stringify(msg));
+        const serializedMsg = JSON.stringify(msg);
+        if (lastBroadcastedPayloadJsonRef.current === serializedMsg) {
+          return;
+        }
+        lastBroadcastedPayloadJsonRef.current = serializedMsg;
+
+        const encoded = new TextEncoder().encode(serializedMsg);
         room.localParticipant.publishData(encoded, { reliable: true });
         console.log('[Whiteboard] Broadcasted board state sync to agent:', payload.currentSlide.title, `(${allPages.length} slides)`);
       } catch (err) {
         console.warn('[Whiteboard] Could not broadcast board state sync:', err);
+      }
+    },
+    [room, sessionTitle, getCurrentSyncedPages]
+  );
+
+  const syncSessionContextToAgent = useCallback(
+    (
+      customPages?: WhiteboardPage[],
+      customActiveIndex?: number,
+      customTitle?: string,
+      customMessages?: ChatMessage[]
+    ) => {
+      if (!room || room.state !== 'connected' || !room.localParticipant) return;
+      try {
+        const allPages = customPages ?? getCurrentSyncedPages();
+        const activeIdx = customActiveIndex ?? activePageIndexRef.current;
+        const title = customTitle ?? sessionTitle;
+        const messages = customMessages ?? chatMessagesRef.current;
+        const activePage = allPages[activeIdx] || allPages[0];
+
+        const allSlidesSummary = allPages.map((p, idx) => {
+          const texts = (p.shapes || [])
+            .filter((s) => s.shapeType === 'text')
+            .map((s) => s.options?.text || '')
+            .filter(Boolean)
+            .slice(0, 3)
+            .join('; ');
+          const maths = (p.shapes || [])
+            .filter((s) => s.shapeType === 'math')
+            .map((s) => s.options?.latex || '')
+            .filter(Boolean)
+            .slice(0, 2)
+            .join(', ');
+          const summaryParts: string[] = [];
+          if (texts) summaryParts.push(texts);
+          if (maths) summaryParts.push(`Formulas: ${maths}`);
+          return {
+            pageNumber: p.pageNumber || idx + 1,
+            title: p.title || `Slide ${idx + 1}`,
+            summary: summaryParts.join(' | ') || 'Visual diagrams and notes',
+          };
+        });
+
+        const recentChatTurns = (messages || []).slice(-6).map((m) => ({
+          role: m.role,
+          text: m.text,
+          timestamp: m.timestamp,
+        }));
+
+        const sessionHistoryVault = (messages || []).slice(-50).map((m) => ({
+          sender: m.role,
+          text: m.text,
+          timestamp: m.timestamp,
+        }));
+
+        const payload = {
+          sessionTitle: title,
+          activePageIndex: activeIdx,
+          totalSlides: allPages.length,
+          activeSlide: {
+            pageNumber: activePage ? activePage.pageNumber : activeIdx + 1,
+            title: activePage ? activePage.title : `Slide ${activeIdx + 1}`,
+            mathEquations: (activePage?.shapes || [])
+              .filter(
+                (s) =>
+                  s.shapeType === 'math' ||
+                  (s.shapeType === 'text' &&
+                    CollisionDetector.isStandaloneMathExpression(s.options?.text || ''))
+              )
+              .map((s) => s.options?.latex || s.options?.text || ''),
+            plainTextNotes: [
+              ...(activePage?.shapes || [])
+                .filter(
+                  (s) =>
+                    s.shapeType === 'text' &&
+                    !CollisionDetector.isStandaloneMathExpression(s.options?.text || '')
+                )
+                .map((s) => s.options?.text || ''),
+              ...(activePage?.handwriting || []).map((h) => h.text),
+            ],
+          },
+          allSlides: allSlidesSummary,
+          recentChatTurns,
+          sessionHistoryVault,
+          totalMessages: messages.length,
+        };
+
+        const encoded = new TextEncoder().encode(
+          JSON.stringify({
+            type: 'resume_session_context',
+            payload,
+          })
+        );
+        room.localParticipant.publishData(encoded, { reliable: true });
+        console.log(`[Whiteboard] Dispatched resume_session_context to agent: "${title}" (${allPages.length} slides, ${messages.length} msgs)`);
+      } catch (err) {
+        console.warn('[Whiteboard] Could not dispatch resume_session_context:', err);
       }
     },
     [room, sessionTitle, getCurrentSyncedPages]
@@ -1008,21 +1171,33 @@ export function Whiteboard({
     const currentHandwriting = engine.getDrawnHandwriting();
 
     let autoTitle = '';
-    const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
-    if (titleH?.text) {
-      autoTitle = titleH.text;
+    // Priority 1: Slide media asset (embedded YouTube video / high-res image)
+    const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+    if (firstMedia?.options?.media?.fileName) {
+      autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 48);
     } else {
-      const firstText = currentShapes.find((s) => s.shapeType === 'text');
-      if (firstText?.options?.text) {
-        autoTitle = firstText.options.text;
+      // Priority 2: Structured diagram root header
+      const firstDiagram = currentShapes.find(
+        (s) => s.shapeType === 'diagram' || (s.shapeType === 'rectangle' && (s.y ?? 0) <= 160 && s.options?.label)
+      );
+      if (firstDiagram?.options?.label) {
+        autoTitle = firstDiagram.options.label.slice(0, 48);
       } else {
-        const firstMath = currentShapes.find((s) => s.shapeType === 'math');
-        if (firstMath?.options?.latex) {
-          autoTitle = firstMath.options.latex.slice(0, 35);
+        // Priority 3: Explicit title handwriting
+        const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
+        if (titleH?.text) {
+          autoTitle = titleH.text.slice(0, 48);
         } else {
-          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
-          if (firstMedia?.options?.media?.fileName) {
-            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          // Priority 4: Math equation
+          const firstMath = currentShapes.find((s) => s.shapeType === 'math');
+          if (firstMath?.options?.latex) {
+            autoTitle = firstMath.options.latex.slice(0, 35);
+          } else {
+            // Priority 5: First text note
+            const firstText = currentShapes.find((s) => s.shapeType === 'text');
+            if (firstText?.options?.text) {
+              autoTitle = firstText.options.text.slice(0, 40);
+            }
           }
         }
       }
@@ -1030,9 +1205,12 @@ export function Whiteboard({
 
     const updatedPages = pagesRef.current.map((p, idx) => {
       if (idx === activePageIndexRef.current) {
+        const existingTitle = (p.title || '').trim();
+        const hasSubstantiveTitle = existingTitle && !/^(Whiteboard\s+)?Slide\s+\d+$/i.test(existingTitle);
+        const resolvedTitle = hasSubstantiveTitle ? existingTitle : (autoTitle || `Slide ${p.pageNumber}`);
         return {
           ...p,
-          title: autoTitle || p.title || `Slide ${p.pageNumber}`,
+          title: resolvedTitle,
           shapes: [...currentShapes],
           handwriting: [...currentHandwriting],
         };
@@ -1069,21 +1247,33 @@ export function Whiteboard({
     const currentHandwriting = engine.getDrawnHandwriting();
 
     let autoTitle = '';
-    const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
-    if (titleH?.text) {
-      autoTitle = titleH.text;
+    // Priority 1: Slide media asset (embedded YouTube video / high-res image)
+    const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
+    if (firstMedia?.options?.media?.fileName) {
+      autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 48);
     } else {
-      const firstText = currentShapes.find((s) => s.shapeType === 'text');
-      if (firstText?.options?.text) {
-        autoTitle = firstText.options.text;
+      // Priority 2: Structured diagram root header
+      const firstDiagram = currentShapes.find(
+        (s) => s.shapeType === 'diagram' || (s.shapeType === 'rectangle' && (s.y ?? 0) <= 160 && s.options?.label)
+      );
+      if (firstDiagram?.options?.label) {
+        autoTitle = firstDiagram.options.label.slice(0, 48);
       } else {
-        const firstMath = currentShapes.find((s) => s.shapeType === 'math');
-        if (firstMath?.options?.latex) {
-          autoTitle = firstMath.options.latex.slice(0, 35);
+        // Priority 3: Explicit title handwriting
+        const titleH = currentHandwriting.find((h) => h.style === 'title' || (h.position && h.position.y < 160));
+        if (titleH?.text) {
+          autoTitle = titleH.text.slice(0, 48);
         } else {
-          const firstMedia = currentShapes.find((s) => s.shapeType === 'image' || s.shapeType === 'video');
-          if (firstMedia?.options?.media?.fileName) {
-            autoTitle = firstMedia.options.media.fileName.replace(/\.[^.]+$/, '').slice(0, 35);
+          // Priority 4: Math equation
+          const firstMath = currentShapes.find((s) => s.shapeType === 'math');
+          if (firstMath?.options?.latex) {
+            autoTitle = firstMath.options.latex.slice(0, 35);
+          } else {
+            // Priority 5: First text note
+            const firstText = currentShapes.find((s) => s.shapeType === 'text');
+            if (firstText?.options?.text) {
+              autoTitle = firstText.options.text.slice(0, 40);
+            }
           }
         }
       }
@@ -1091,9 +1281,12 @@ export function Whiteboard({
 
     const updatedPages = pagesRef.current.map((p, idx) => {
       if (idx === activePageIndexRef.current) {
+        const existingTitle = (p.title || '').trim();
+        const hasSubstantiveTitle = existingTitle && !/^(Whiteboard\s+)?Slide\s+\d+$/i.test(existingTitle);
+        const resolvedTitle = hasSubstantiveTitle ? existingTitle : (autoTitle || `Slide ${p.pageNumber}`);
         return {
           ...p,
-          title: autoTitle || p.title || `Slide ${p.pageNumber}`,
+          title: resolvedTitle,
           shapes: [...currentShapes],
           handwriting: [...currentHandwriting],
         };
@@ -1102,7 +1295,7 @@ export function Whiteboard({
     });
 
     const newPageNum = updatedPages.length + 1;
-    const finalTitle = customTitle && customTitle.trim() ? customTitle.trim() : `Slide ${newPageNum}`;
+    const finalTitle = typeof customTitle === 'string' && customTitle.trim() ? customTitle.trim() : `Slide ${newPageNum}`;
     const newPage: WhiteboardPage = {
       id: `page-${Date.now()}`,
       pageNumber: newPageNum,
@@ -1352,7 +1545,6 @@ export function Whiteboard({
   }, [getCurrentSyncedPages, buildSessionSnapshot]);
 
   const currentFileHandleRef = useRef<any>(null);
-  const [saveToast, setSaveToast] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setSaveToast(msg);
@@ -1544,8 +1736,9 @@ export function Whiteboard({
 
       saveRecentSession(newTitle, data.pages, safeIdx);
       broadcastBoardStateSync(data.pages, safeIdx, newTitle);
+      syncSessionContextToAgent(data.pages, safeIdx, newTitle, loadedMessages);
     },
-    [saveRecentSession, broadcastBoardStateSync]
+    [saveRecentSession, broadcastBoardStateSync, syncSessionContextToAgent]
   );
 
   const handleOpenPicker = useCallback(async () => {
@@ -1751,10 +1944,19 @@ export function Whiteboard({
       // Allow components to settle, then broadcast
       const timer = setTimeout(() => {
         broadcastBoardStateSync();
+        syncSessionContextToAgent();
+        try {
+          const payload = {
+            type: 'update_internet_access',
+            enabled: isInternetAccessEnabled,
+          };
+          const encoder = new TextEncoder();
+          room.localParticipant.publishData(encoder.encode(JSON.stringify(payload)), { reliable: true });
+        } catch (e) {}
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [room, room?.state, broadcastBoardStateSync]);
+  }, [room, room?.state, broadcastBoardStateSync, syncSessionContextToAgent, isInternetAccessEnabled]);
 
   // --- Live Writing Auto-Follow & Auto-Resize Camera Controller ---
   const startAutoFollowGlide = useCallback((desiredPanX: number, desiredPanY: number, desiredZoom?: number) => {
@@ -1788,6 +1990,15 @@ export function Whiteboard({
       if (step.settled) {
         autoFollowRafRef.current = null;
         autoFollowTargetTransformRef.current = null;
+        const settledTransform = {
+          zoom: Number(step.transform.zoom.toFixed(3)),
+          pan: {
+            x: Math.round(step.transform.pan.x),
+            y: Math.round(step.transform.pan.y),
+          },
+        };
+        transformRef.current = settledTransform;
+        setTransform(settledTransform);
         return;
       }
       autoFollowRafRef.current = requestAnimationFrame(tick);
@@ -1954,11 +2165,13 @@ export function Whiteboard({
       graph3dOverlay: graph3dRef.current ?? undefined,
       vennOverlay: vennRef.current ?? undefined,
       mediaOverlay: mediaRef.current ?? undefined,
+      quizOverlay: quizRef.current ?? undefined,
       getMathOverlay: () => mathRef.current,
       getGraphOverlay: () => graphRef.current,
       getGraph3DOverlay: () => graph3dRef.current,
       getVennOverlay: () => vennRef.current,
       getMediaOverlay: () => mediaRef.current,
+      getQuizOverlay: () => quizRef.current,
       getWritingStyle: () => currentStyleRef.current,
       onTelemetry: (metrics: SyncTelemetry) => setTelemetryRef.current(metrics),
       onBoardFull: () => addNewPageRef.current(),
@@ -2349,6 +2562,81 @@ export function Whiteboard({
       )
     );
   }, []);
+
+  const handleRemoveQuiz = useCallback((id: string) => {
+    setPages((prev) =>
+      prev.map((p, idx) =>
+        idx === activePageIndexRef.current
+          ? {
+              ...p,
+              shapes: p.shapes.filter((s) => s.id !== id),
+            }
+          : p
+      )
+    );
+  }, []);
+
+  const handleQuizPositionUpdate = useCallback((id: string, newX: number, newY: number) => {
+    setPages((prev) =>
+      prev.map((p, idx) =>
+        idx === activePageIndexRef.current
+          ? {
+              ...p,
+              shapes: p.shapes.map((s) => (s.id === id ? { ...s, x: newX, y: newY } : s)),
+            }
+          : p
+      )
+    );
+  }, []);
+
+  const handleQuizAnswerSubmitted = useCallback(
+    (
+      quizId: string,
+      answer: any,
+      isCorrect: boolean,
+      mode: 'click' | 'voice' | 'drawing' | 'text'
+    ) => {
+      try {
+        if (!room || room.state !== 'connected' || !room.localParticipant) return;
+        const currentQuiz = quizRef.current?.getQuizzes().find((q) => q.id === quizId || q.quizId === quizId);
+        let answerText = String(answer);
+        if (currentQuiz?.options) {
+          const matchedOpt = currentQuiz.options.find(
+            (o) => o.id === answer || o.label === answer || o.text === answer
+          );
+          if (matchedOpt) {
+            answerText = `${matchedOpt.label ? matchedOpt.label + ': ' : ''}${matchedOpt.text}`;
+          }
+        } else if (currentQuiz?.pairs && typeof answer === 'object') {
+          answerText = 'Matched all concept pairs';
+        }
+
+        const isShortAnswer = currentQuiz?.quizType === 'short_answer';
+        const payload = JSON.stringify({
+          type: 'quiz_submission',
+          payload: {
+            quizId,
+            quizType: currentQuiz?.quizType || 'multiple_choice',
+            answer,
+            answerText,
+            isCorrect,
+            mode,
+            question: currentQuiz?.question || '',
+            expectedAnswer: currentQuiz?.correctAnswer || '',
+            explanation: currentQuiz?.explanation || '',
+            requiresEvaluation: isShortAnswer,
+            timestamp: Date.now(),
+          },
+        });
+        const encoder = new TextEncoder();
+        room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+        console.log('[Whiteboard] Dispatched quiz_submission to agent:', quizId, answerText, isCorrect, mode);
+      } catch (err) {
+        console.warn('[Whiteboard] Could not dispatch quiz_submission:', err);
+      }
+    },
+    [room]
+  );
 
   // --- Slide Media (Images & Videos) Handlers ---
   const handleMediaGeometryUpdate = useCallback(
@@ -2834,9 +3122,17 @@ export function Whiteboard({
       const nextState = !isMicrophoneEnabled;
       await room.localParticipant.setMicrophoneEnabled(nextState, nextState ? MIC_CAPTURE_OPTIONS : undefined);
       setIsMicrophoneEnabled(nextState);
+
+      try {
+        const payload = JSON.stringify({ type: 'update_mic_state', enabled: nextState });
+        const encoder = new TextEncoder();
+        await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+        console.log('[Whiteboard] Broadcasted update_mic_state to agent:', nextState);
+      } catch (e) {
+        console.warn('[Whiteboard] Failed to publish mic state update:', e);
+      }
     } catch (error) {
       console.error('[Whiteboard] Failed to toggle microphone:', error);
-      setIsMicrophoneEnabled(!isMicrophoneEnabled);
     }
   };
 
@@ -2888,8 +3184,7 @@ export function Whiteboard({
       console.warn('[Whiteboard] Audio check on reset:', e);
     }
 
-    // 1. Clear local frontend chat message log
-    setChatMessages([]);
+    // 1. Preserve chat messages log while resetting AI turn context
 
     // 2. Dispatch reset signal to the AI Tutor backend agent
     try {
@@ -2960,6 +3255,44 @@ export function Whiteboard({
           const item = msg.payload;
           if (item && item.text) {
             setChatMessages((prev) => reconcileLiveChatMessages(prev, item));
+          }
+        } else if (msg.type === 'quiz') {
+          const quizPayload = msg.payload || {};
+          const drawPayload = {
+            kind: 'shape',
+            shapeType: 'quiz',
+            x: quizPayload.x ?? 1000,
+            y: quizPayload.y ?? 180,
+            width: quizPayload.width ?? 520,
+            height: quizPayload.height ?? 360,
+            options: quizPayload,
+          };
+          engine.onDrawCommand({
+            id: `live-quiz-${Date.now()}`,
+            type: 'shape',
+            scheduledTime,
+            commitGroup: `live-group-${Date.now()}`,
+            payload: drawPayload as any,
+          });
+        } else if (msg.type === 'quiz_answer') {
+          if (quizRef.current) {
+            quizRef.current.submitAnswer(
+              msg.payload?.quizId || 'active',
+              msg.payload?.answer,
+              msg.payload?.mode || 'voice'
+            );
+          }
+        } else if (msg.type === 'quiz_retry') {
+          if (quizRef.current) {
+            quizRef.current.retryQuiz(msg.payload?.quizId || 'active');
+          }
+        } else if (msg.type === 'quiz_evaluation_result') {
+          if (quizRef.current?.applyEvaluationResult) {
+            quizRef.current.applyEvaluationResult(
+              msg.payload?.quizId || 'active',
+              Boolean(msg.payload?.isCorrect),
+              msg.payload?.feedback || ''
+            );
           }
         } else if (msg.type === 'shape' || msg.type === 'handwriting') {
           const drawPayload = msg.payload;
@@ -3035,18 +3368,72 @@ export function Whiteboard({
                 : p
             )
           );
+        } else if (msg.type === 'update_item') {
+          if (msg.payload) {
+            engine.updateItem(msg.payload);
+            setPages((prev) =>
+              prev.map((p, idx) =>
+                idx === activePageIndexRef.current
+                  ? {
+                      ...p,
+                      shapes: engine.getDrawnShapes(),
+                      handwriting: engine.getDrawnHandwriting(),
+                    }
+                  : p
+              )
+            );
+          }
         } else if (msg.type === 'new_page') {
           const slideTitle =
             typeof msg.payload?.title === 'string' && msg.payload.title.trim()
               ? msg.payload.title.trim()
               : undefined;
           addNewPage(slideTitle);
+        } else if (msg.type === 'switch_page' || msg.type === 'switch_slide') {
+          const payload = msg.payload || {};
+          let targetIdx: number | undefined = undefined;
+          if (typeof payload.pageIndex === 'number') {
+            targetIdx = payload.pageIndex;
+          } else if (typeof payload.slideNumber === 'number') {
+            targetIdx = payload.slideNumber - 1;
+          } else if (typeof payload.pageNumber === 'number') {
+            targetIdx = payload.pageNumber - 1;
+          } else if (typeof payload.target === 'string') {
+            const t = payload.target.trim().toLowerCase();
+            if (t === 'prev' || t === 'previous' || t === 'back') {
+              targetIdx = Math.max(0, activePageIndexRef.current - 1);
+            } else if (t === 'next' || t === 'forward') {
+              targetIdx = Math.min(pagesRef.current.length - 1, activePageIndexRef.current + 1);
+            } else {
+              // Search by slide title
+              const matchIdx = pagesRef.current.findIndex(
+                (p) => (p.title || '').toLowerCase().includes(t)
+              );
+              if (matchIdx !== -1) targetIdx = matchIdx;
+            }
+          }
+          if (targetIdx !== undefined && targetIdx >= 0 && targetIdx < pagesRef.current.length) {
+            console.log(`[Whiteboard] Switching to slide index ${targetIdx} via AI agent command.`);
+            switchToPage(targetIdx);
+          }
+        } else if (msg.type === 'control_video') {
+          const payload = msg.payload || {};
+          const targetId = payload.video_id || payload.mediaId || payload.media_id;
+          const result = mediaRef.current?.controlMedia(targetId, payload);
+          console.log('[Whiteboard] Executed control_video command:', payload, result);
         }
 
-        // Keep agent memory in sync with new drawing/erasing updates
-        setTimeout(() => {
-          broadcastBoardStateSync();
-        }, 800);
+        // Keep agent memory in sync ONLY when actual board mutations occur (never on chat_message transcript chunks)
+        if (msg.type !== 'chat_message') {
+          forceImmediateVisionFrameRef.current = true;
+          if (boardSyncDebounceTimerRef.current) {
+            clearTimeout(boardSyncDebounceTimerRef.current);
+          }
+          boardSyncDebounceTimerRef.current = setTimeout(() => {
+            boardSyncDebounceTimerRef.current = null;
+            broadcastBoardStateSync();
+          }, 120);
+        }
       } catch (e) {
         console.error('[Whiteboard] Error parsing data channel msg', e);
       }
@@ -3285,6 +3672,11 @@ export function Whiteboard({
         // Enable microphone with echo cancellation and noise suppression
         await room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS);
         setIsMicrophoneEnabled(true);
+        try {
+          const payload = JSON.stringify({ type: 'update_mic_state', enabled: true });
+          const encoder = new TextEncoder();
+          room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+        } catch (_) {}
         console.log('[Whiteboard] Microphone successfully enabled for LiveKit session');
       } catch (err) {
         console.error('[Whiteboard] Failed to enable microphone or video on session start:', err);
@@ -3297,16 +3689,10 @@ export function Whiteboard({
 
   // Ensure microphone is strictly disabled before Start Session is clicked
   useEffect(() => {
-    if (room) {
-      if (hasStarted) {
-        room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS)
-          .then(() => setIsMicrophoneEnabled(true))
-          .catch(err => console.error('[Whiteboard] Auto-reconnect mic failed:', err));
-      } else {
-        room.localParticipant.setMicrophoneEnabled(false)
-          .then(() => setIsMicrophoneEnabled(false))
-          .catch(() => {});
-      }
+    if (room && !hasStarted) {
+      room.localParticipant.setMicrophoneEnabled(false)
+        .then(() => setIsMicrophoneEnabled(false))
+        .catch(() => {});
     }
   }, [room, hasStarted]);
 
@@ -3385,10 +3771,10 @@ export function Whiteboard({
           left: 0,
           width: VIRTUAL_WIDTH,
           height: VIRTUAL_HEIGHT,
-          transform: `translate(${transform.pan.x}px, ${transform.pan.y}px) scale(${transform.zoom})`,
+          transform: `translate(${Math.round(transform.pan.x)}px, ${Math.round(transform.pan.y)}px) scale(${transform.zoom})`,
           transformOrigin: '0 0',
           pointerEvents: 'none',
-          willChange: 'transform',
+          willChange: autoFollowRafRef.current !== null ? 'transform' : 'auto',
         }}
       >
         {/* Layer 1: Rough.js Canvas (Shapes, Arrows, Background Diagrams) */}
@@ -3396,6 +3782,7 @@ export function Whiteboard({
           ref={canvasRef}
           width={VIRTUAL_WIDTH}
           height={VIRTUAL_HEIGHT}
+          zoom={transform.zoom}
         />
 
         {/* Layer 1.5: Interactive Slide Media Layer (High-Res Images & Playable Videos with AI Vision/Audio Tap) */}
@@ -3442,6 +3829,15 @@ export function Whiteboard({
           onRemoveVenn={handleRemoveVenn}
         />
 
+        {/* Layer 5.8: Interactive Instant Quiz Overlay */}
+        <QuizOverlay
+          ref={quizRef}
+          zoom={transform.zoom}
+          onQuizAnswerSubmitted={handleQuizAnswerSubmitted}
+          onRemoveQuiz={handleRemoveQuiz}
+          onUpdatePosition={handleQuizPositionUpdate}
+        />
+
         {/* Layer 6: User Drawing Overlay (Handwriting & Text input by the user) */}
         <UserDrawingLayer
           mode={toolMode}
@@ -3449,6 +3845,9 @@ export function Whiteboard({
           paths={pages[activePageIndex]?.userPaths || []}
           texts={pages[activePageIndex]?.userTexts || []}
           onPathsChange={(newPaths) => {
+            if (quizRef.current) {
+              quizRef.current.evaluateDrawingInteraction(newPaths);
+            }
             const currentP = pagesRef.current[activePageIndexRef.current];
             const oldPaths = currentP?.userPaths || [];
             const oldTexts = currentP?.userTexts || [];
@@ -4374,6 +4773,49 @@ export function Whiteboard({
             )}
           </button>
 
+          {/* Providers & Intermediate Model Selector */}
+          <button
+            type="button"
+            onClick={() => setIsProvidersModalOpen(true)}
+            title={
+              intermediateModelSettings?.enabled
+                ? `Intermediate Model Active: ${intermediateModelSettings.modelId} via ${intermediateModelSettings.providerId} (${intermediateModelSettings.thinkingLevel.toUpperCase()})`
+                : 'Configure 50+ LLM Providers (NVIDIA NIM, Groq, Ollama, OpenRouter...) & Intermediate Model'
+            }
+            style={{
+              padding: '7px 11px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: intermediateModelSettings?.enabled ? 'rgba(56, 239, 125, 0.15)' : 'rgba(78, 205, 196, 0.15)',
+              color: intermediateModelSettings?.enabled ? '#38EF7D' : '#4ECDC4',
+              border: intermediateModelSettings?.enabled ? '1px solid rgba(56, 239, 125, 0.4)' : '1px solid rgba(78, 205, 196, 0.35)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>⚡</span>
+            <span>{intermediateModelSettings?.enabled ? 'Intermediate: ON' : 'Providers'}</span>
+            {intermediateModelSettings?.enabled && (
+              <span
+                style={{
+                  fontSize: 9,
+                  backgroundColor: 'rgba(56, 239, 125, 0.35)',
+                  padding: '1px 5px',
+                  borderRadius: 4,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  color: '#FFFFFF',
+                }}
+              >
+                {intermediateModelSettings.providerId}
+              </span>
+            )}
+          </button>
+
           {/* Speaking Style, Vocal Tone & Persona Studio Selector */}
           <button
             onClick={() => setIsPersonaModalOpen(true)}
@@ -4553,6 +4995,34 @@ export function Whiteboard({
             )}
           </div>
 
+          {/* Internet Access Toggle Button */}
+          <button
+            type="button"
+            onClick={toggleInternetAccess}
+            title={
+              isInternetAccessEnabled
+                ? 'Internet Access: Enabled (AI can search the web, fetch images, and analyze YouTube videos)'
+                : 'Internet Access: Disabled (Click to enable live web search & online media)'
+            }
+            style={{
+              padding: '7px 11px',
+              fontSize: 11,
+              fontWeight: 600,
+              backgroundColor: isInternetAccessEnabled ? 'rgba(78, 205, 196, 0.16)' : 'rgba(255, 255, 255, 0.08)',
+              color: isInternetAccessEnabled ? '#4ECDC4' : '#888888',
+              border: isInternetAccessEnabled ? '1px solid rgba(78, 205, 196, 0.4)' : '1px solid rgba(255, 255, 255, 0.15)',
+              borderRadius: 7,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>🌐</span>
+            <span>{isInternetAccessEnabled ? 'Web: ON' : 'Web: OFF'}</span>
+          </button>
+
           {/* Gemini API Key Settings */}
           <button
             onClick={() => setIsApiKeyModalOpen(true)}
@@ -4586,7 +5056,7 @@ export function Whiteboard({
           {/* Reset AI Memory / Context */}
           <button
             onClick={handleResetAIMemory}
-            title="Reset AI Memory (Start New Conversation with Fresh Context)"
+            title="Reset AI Memory (Start New Conversation with Fresh Context — Preserves Chat History)"
             style={{
               padding: '7px 9px',
               fontSize: 12,
@@ -4599,11 +5069,43 @@ export function Whiteboard({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              gap: 4,
               transition: 'all 0.15s ease',
             }}
           >
             <span>🔄</span>
+            <span style={{ fontSize: 11 }}>Reset AI</span>
           </button>
+
+          {/* Clear Chat History */}
+          {chatMessages.length > 0 && (
+            <button
+              onClick={() => {
+                setChatMessages([]);
+                setSaveToast('🧹 Chat history cleared');
+                setTimeout(() => setSaveToast(null), 2500);
+              }}
+              title="Clear Chat History (Clears visible chat log, keeps AI memory active)"
+              style={{
+                padding: '7px 9px',
+                fontSize: 12,
+                fontWeight: 500,
+                backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                color: '#AAAAAA',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: 7,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <span>🧹</span>
+              <span style={{ fontSize: 11 }}>Clear Chat</span>
+            </button>
+          )}
 
           {/* Diagnostics */}
           <button
@@ -4869,6 +5371,13 @@ export function Whiteboard({
           setSaveToast(`🎙️ Voice switched to ${chosen?.name || newVoice} (${chosen?.tone || ''})`);
           setTimeout(() => setSaveToast(null), 3500);
         }}
+      />
+
+      {/* Providers & Intermediate Model Modal */}
+      <ProvidersModal
+        isOpen={isProvidersModalOpen}
+        onClose={() => setIsProvidersModalOpen(false)}
+        onIntermediateModelChanged={(next) => setIntermediateModelSettings(next)}
       />
 
       {/* Gemini Live Model & Thinking Level Selector Modal */}

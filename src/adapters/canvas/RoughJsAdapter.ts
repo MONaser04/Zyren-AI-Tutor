@@ -67,12 +67,27 @@ export class RoughJsAdapter implements ICanvasAdapter {
   /** Auto-incrementing z-index counter for new shapes (starts at 1) */
   private nextZIndex = 1;
 
+  /** Current effective pixel density ratio (base devicePixelRatio * zoom scale, capped at 3.5) */
+  private currentDpr = 1;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to get 2D context from canvas');
     this.ctx = ctx;
     this.rc = rough.canvas(canvas);
+    this.currentDpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+    this.applyContextSettings();
+  }
+
+  /**
+   * Applies crisp high-DPI scaling, high-quality image smoothing, and legibility hints to the 2D context.
+   */
+  private applyContextSettings(): void {
+    this.ctx.setTransform(this.currentDpr, 0, 0, this.currentDpr, 0, 0);
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = 'high';
+    (this.ctx as any).textRendering = 'optimizeLegibility';
   }
 
   drawRectangle(x: number, y: number, w: number, h: number, opts?: ShapeOptions): ShapeHandle {
@@ -221,6 +236,9 @@ export class RoughJsAdapter implements ICanvasAdapter {
 
     const drawFn = () => {
       this.ctx.save();
+      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.imageSmoothingQuality = 'high';
+      (this.ctx as any).textRendering = 'optimizeLegibility';
       const fontWeight = isHandwritten ? (isStepHeader || isMainTitle ? '700' : '500') : (isStepHeader || isMainTitle ? '600' : '400');
       this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
       this.ctx.direction = direction;
@@ -228,9 +246,14 @@ export class RoughJsAdapter implements ICanvasAdapter {
 
       // Determine smart maximum wrapping width based on coordinate x and whiteboard limits
       // Canvas width is 1920, right safe margin is 60px (1860px max x).
-      const availableWidth = Math.max(300, 1860 - x);
-      const maxWidth = opts?.maxWidth ?? (isMainTitle ? availableWidth : Math.min(760, availableWidth));
-      const elasticTailAllowance = 135;
+      const hasExplicitMaxWidth = typeof opts?.maxWidth === 'number' && opts.maxWidth > 0;
+      const availableWidth = hasExplicitMaxWidth
+        ? Math.max(80, Math.min(opts!.maxWidth!, 1860 - x))
+        : Math.max(300, 1860 - x);
+      const maxWidth = hasExplicitMaxWidth
+        ? availableWidth
+        : (isMainTitle ? availableWidth : Math.min(760, availableWidth));
+      const elasticTailAllowance = hasExplicitMaxWidth ? 0 : 135;
 
       // Multi-line word wrapping algorithm with logical list splitting and elastic orphan-tail lookahead
       const lines: string[] = [];
@@ -254,10 +277,11 @@ export class RoughJsAdapter implements ICanvasAdapter {
             const fullRemainingLineWidth = this.ctx.measureText(`${currentLine} ${remainingTailText}`).width;
             const prevWord = wIdx > 0 ? words[wIdx - 1] : '';
             const isShortEquationTail =
-              word === '=' ||
-              word.startsWith('=') ||
-              prevWord === '=' ||
-              (remainingWordsCount <= 3 && fullRemainingLineWidth <= maxWidth + elasticTailAllowance);
+              !hasExplicitMaxWidth &&
+              (word === '=' ||
+                word.startsWith('=') ||
+                prevWord === '=' ||
+                (remainingWordsCount <= 3 && fullRemainingLineWidth <= maxWidth + elasticTailAllowance));
 
             if (isShortEquationTail && fullRemainingLineWidth <= availableWidth) {
               currentLine = `${currentLine} ${remainingTailText}`;
@@ -404,10 +428,9 @@ export class RoughJsAdapter implements ICanvasAdapter {
   clear(): void {
     this.committedShapes = [];
     this.pendingShapes = [];
-    this.ctx.save();
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.restore();
+    this.applyContextSettings();
   }
 
   commitFrame(): void {
@@ -420,15 +443,28 @@ export class RoughJsAdapter implements ICanvasAdapter {
     this.redraw();
   }
 
-  resize(width: number, height: number): void {
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = width * dpr;
-    this.canvas.height = height * dpr;
-    this.canvas.style.width = `${width}px`;
-    this.canvas.style.height = `${height}px`;
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.scale(dpr, dpr);
-    this.redraw();
+  resize(width: number, height: number, zoom: number = 1): void {
+    const baseDpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+    const safeZoom = Math.max(1, Math.min(zoom || 1, 4.0));
+    // High-DPI buffer scaling: cap at 3.5 to prevent exceeding browser canvas memory limits
+    const effectiveDpr = Math.min(3.5, Math.max(1, baseDpr * safeZoom));
+
+    const physicalWidth = Math.round(width * effectiveDpr);
+    const physicalHeight = Math.round(height * effectiveDpr);
+
+    const sizeChanged = this.canvas.width !== physicalWidth || this.canvas.height !== physicalHeight;
+    const dprChanged = Math.abs(this.currentDpr - effectiveDpr) > 0.01;
+
+    if (sizeChanged || dprChanged) {
+      this.currentDpr = effectiveDpr;
+      this.canvas.width = physicalWidth;
+      this.canvas.height = physicalHeight;
+      this.canvas.style.width = `${width}px`;
+      this.canvas.style.height = `${height}px`;
+      this.rc = rough.canvas(this.canvas);
+      this.applyContextSettings();
+      this.redraw();
+    }
   }
 
   getCanvasElement(): HTMLCanvasElement {
@@ -477,10 +513,9 @@ export class RoughJsAdapter implements ICanvasAdapter {
    * z-index shapes appear on top.
    */
   private redraw(): void {
-    this.ctx.save();
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.restore();
+    this.applyContextSettings();
 
     // Sort committed shapes by z-index (stable sort, lower z-index drawn first)
     const sortedCommitted = [...this.committedShapes].sort(
