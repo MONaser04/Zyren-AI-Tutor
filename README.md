@@ -123,7 +123,7 @@ python main.py
   - *Streaming Conversational Voice*: Handled with sub-second latency by Google Gemini Live Realtime.
   - *Executive Whiteboard Specialist (`ExecutiveModelDispatcher`)*: Dispatches complex multi-branch diagrams, mathematical proofs, and interactive quizzes to a dedicated reasoning model.
 - **Comprehensive 40+ Provider Matrix (`ProvidersModal`)**:
-  - **Enterprise Cloud Providers**: NVIDIA NIM (Nemotron-4, Llama 3.3, Mistral), OpenRouter, Groq (DeepSeek-R1, Llama 3.3 70B), xAI (Grok 2/3), DeepSeek Official API (R1 & V3), Azure OpenAI, Together AI, Mistral & Codestral, Cerebras (1000+ tok/s), SambaNova, Fireworks, Novita, Cloudflare Workers AI, and Google Vertex AI.
+  - **Enterprise Cloud Providers**: NVIDIA NIM, OpenRouter, Groq, xAI, DeepSeek, Azure OpenAI, Together AI, Mistral AI, Cerebras, SambaNova, Fireworks, Novita, Cloudflare Workers AI, and Google Vertex AI.
   - **Local & Offline Inference**: Native zero-latency integration with local Ollama daemons, LM Studio, llama.cpp (`llama-server`), and any custom OpenAI-compatible proxy (`localhost:8000`).
   - **In-App Provider Hub**: Real-time connection testing, latency benchmarking, dynamic model discovery (`/v1/models`), per-provider thinking depth controls, and secure local AppData vault storage.
 - **Mid-Session Gemini Model Switcher**:
