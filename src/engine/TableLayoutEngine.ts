@@ -50,12 +50,12 @@ export class TableLayoutEngine {
   public static readonly CANVAS_WIDTH = 1920;
   public static readonly CANVAS_HEIGHT = 1080;
   public static readonly DEFAULT_START_Y = 180;
-  public static readonly MIN_COL_WIDTH = 110;
-  public static readonly MAX_COL_WIDTH = 560;
-  public static readonly CELL_PADDING_X = 24; // 12px on left + 12px on right
+  public static readonly MIN_COL_WIDTH = 130;
+  public static readonly MAX_COL_WIDTH = 580;
+  public static readonly CELL_PADDING_X = 28; // 14px on left + 14px on right
   public static readonly BASE_ROW_HEIGHT = 44;
-  public static readonly HEADER_HEIGHT = 50;
-  public static readonly TITLE_HEIGHT = 52;
+  public static readonly HEADER_HEIGHT = 46;
+  public static readonly TITLE_HEIGHT = 42;
 
   /**
    * Main entrypoint to compute table layout.
@@ -113,67 +113,98 @@ export class TableLayoutEngine {
       return rowCells;
     });
 
-    // 3. Pass 1: Measure natural content widths for each column
-    const naturalWidths: number[] = normalizedCols.map((col, cIdx) => {
-      if (col.explicitWidth && col.explicitWidth > 40) {
-        return col.explicitWidth;
-      }
-      // Measure header
-      let maxContentW = this.estimateTextWidth(col.header, fontSize + 1, true);
+    // 3. Pass 1: Compute Min-Content (unbreakable words) and Preferred (prose) widths for each column
+    const minColWidths: number[] = [];
+    const preferredColWidths: number[] = [];
 
-      // Measure all cells in this column
+    normalizedCols.forEach((col, cIdx) => {
+      if (col.explicitWidth && col.explicitWidth > 40) {
+        minColWidths.push(col.explicitWidth);
+        preferredColWidths.push(col.explicitWidth);
+        return;
+      }
+
+      // 3.1 Longest unbreakable word in header
+      const headerWords = col.header.split(/\s+/).filter(Boolean);
+      let longestWordW = headerWords.length > 0
+        ? Math.max(...headerWords.map((w) => this.estimateTextWidth(w, fontSize + 1, true)))
+        : this.estimateTextWidth(col.header, fontSize + 1, true);
+      let maxNaturalW = this.estimateTextWidth(col.header, fontSize + 1, true);
+
+      // 3.2 Longest unbreakable word across all cells in this column
       parsedRows.forEach((row) => {
         const cell = row[cIdx];
         if (cell) {
-          const cellW = this.estimateCellWidth(cell, fontSize);
-          if (cellW > maxContentW) {
-            maxContentW = cellW;
+          const wordW = this.estimateLongestWordWidth(cell, fontSize);
+          if (wordW > longestWordW) {
+            longestWordW = wordW;
+          }
+          const cellNaturalW = this.estimateCellWidth(cell, fontSize);
+          if (cellNaturalW > maxNaturalW) {
+            maxNaturalW = cellNaturalW;
           }
         }
       });
 
-      // Add cell horizontal padding
-      const totalColW = maxContentW + this.CELL_PADDING_X;
-      return Math.max(this.MIN_COL_WIDTH, Math.min(this.MAX_COL_WIDTH, totalColW));
+      // minContent: Longest unbreakable word + horizontal cell padding (28px) + safety buffer (20px)
+      // This strictly guarantees that whole words will NEVER be broken across lines
+      const minW = Math.max(this.MIN_COL_WIDTH, longestWordW + this.CELL_PADDING_X + 20);
+      minColWidths.push(minW);
+
+      // preferredContent: Natural width with reading comfort upper clamp
+      const prefW = Math.max(minW, Math.min(this.MAX_COL_WIDTH, maxNaturalW + this.CELL_PADDING_X + 16));
+      preferredColWidths.push(prefW);
     });
 
     // 4. Pass 2: Determine Table Target Width & Canvas Slot
-    let targetTotalWidth = naturalWidths.reduce((sum, w) => sum + w, 0);
+    const sumMin = minColWidths.reduce((a, b) => a + b, 0);
+    const sumPref = preferredColWidths.reduce((a, b) => a + b, 0);
+
     const position = options.position || 'auto';
     let targetX = options.x !== undefined ? options.x : 160;
     let targetY = options.y !== undefined ? options.y : this.DEFAULT_START_Y;
+    let targetTotalWidth = sumPref;
 
-    if (position === 'full' || (position === 'auto' && (colCount >= 4 || targetTotalWidth > 900))) {
+    if (position === 'full' || (position === 'auto' && (colCount >= 3 || sumPref > 920))) {
       // Full-width comparison table
       const maxWidthAllowed = 1580;
-      const minWidthAllowed = 900;
-      const clampedW = Math.max(minWidthAllowed, Math.min(maxWidthAllowed, targetTotalWidth));
-      targetTotalWidth = clampedW;
+      targetTotalWidth = Math.max(sumMin, Math.min(maxWidthAllowed, Math.max(1200, sumPref)));
       targetX = Math.round((this.CANVAS_WIDTH - targetTotalWidth) / 2);
     } else if (position === 'right' || position === 'column_2') {
       // Column 2 placement beside left notes
-      targetTotalWidth = Math.min(840, Math.max(480, targetTotalWidth));
+      targetTotalWidth = Math.max(sumMin, Math.min(840, sumPref));
       targetX = 980;
     } else if (position === 'column_1') {
       // Column 1 placement
-      targetTotalWidth = Math.min(800, Math.max(460, targetTotalWidth));
+      targetTotalWidth = Math.max(sumMin, Math.min(800, sumPref));
       targetX = 150;
     } else if (position === 'bottom') {
       // Bottom horizontal placement
-      targetTotalWidth = Math.min(1500, Math.max(800, targetTotalWidth));
+      targetTotalWidth = Math.max(sumMin, Math.min(1500, sumPref));
       targetX = Math.round((this.CANVAS_WIDTH - targetTotalWidth) / 2);
       targetY = 560;
     } else {
       // Auto compact center
-      targetTotalWidth = Math.min(1360, Math.max(500, targetTotalWidth));
+      targetTotalWidth = Math.max(sumMin, Math.min(1360, sumPref));
       targetX = Math.round((this.CANVAS_WIDTH - targetTotalWidth) / 2);
     }
 
     // 5. Scale Column Widths to fit Target Total Width
-    const sumNatural = naturalWidths.reduce((a, b) => a + b, 0) || 1;
+    // Guarantee minContentWidth for every column, and distribute extra width proportionally
+    const remainingExtra = Math.max(0, targetTotalWidth - sumMin);
+    const excessWeights = preferredColWidths.map((pref, i) => Math.max(0, pref - minColWidths[i]));
+    const sumExcess = excessWeights.reduce((a, b) => a + b, 0);
+
     const computedColumns: ComputedColumn[] = normalizedCols.map((col, idx) => {
-      let finalW = col.explicitWidth || Math.round((naturalWidths[idx] / sumNatural) * targetTotalWidth);
-      finalW = Math.max(this.MIN_COL_WIDTH, finalW);
+      let finalW = col.explicitWidth;
+      if (!finalW) {
+        if (sumExcess > 0) {
+          finalW = minColWidths[idx] + Math.round((excessWeights[idx] / sumExcess) * remainingExtra);
+        } else {
+          finalW = minColWidths[idx] + Math.round(remainingExtra / colCount);
+        }
+      }
+      finalW = Math.max(minColWidths[idx], finalW);
       return {
         id: col.id,
         header: col.header,
@@ -215,7 +246,7 @@ export class TableLayoutEngine {
     const titleH = title ? this.TITLE_HEIGHT : 0;
     const headerH = isCompact ? 40 : this.HEADER_HEIGHT;
     const rowsTotalH = computedRows.reduce((sum, r) => sum + r.height, 0);
-    const totalTableHeight = titleH + headerH + rowsTotalH + 16; // 16px bottom padding
+    const totalTableHeight = titleH + headerH + rowsTotalH + 12; // 12px bottom padding
 
     return {
       id: tableId,
@@ -327,5 +358,28 @@ export class TableLayoutEngine {
     const lineHeight = isCompact ? 20 : 24;
     const padding = isCompact ? 12 : 20;
     return lines * lineHeight + padding;
+  }
+
+  /**
+   * Estimates the rendered pixel width of the longest unbreakable word in a cell.
+   * Guarantees that columns are never compressed below this width, preventing any word splitting.
+   */
+  private static estimateLongestWordWidth(cell: ComputedCell, fontSize: number): number {
+    if (cell.badge) {
+      return this.estimateTextWidth(cell.badge.text, fontSize - 1, true) + 28;
+    }
+    if (cell.isMath && cell.latex) {
+      return this.estimateTextWidth(cell.latex, fontSize + 1, false) + 20;
+    }
+    const words = String(cell.text || '').split(/\s+/).filter(Boolean);
+    if (words.length === 0) return 0;
+    let maxW = 0;
+    for (const w of words) {
+      const wWidth = this.estimateTextWidth(w, fontSize, false);
+      if (wWidth > maxW) {
+        maxW = wWidth;
+      }
+    }
+    return maxW;
   }
 }

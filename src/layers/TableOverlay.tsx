@@ -246,10 +246,13 @@ export const TableOverlay = forwardRef<TableOverlayHandle, TableOverlayProps>(
         <span
           style={{
             fontSize,
-            lineHeight: 1.45,
+            lineHeight: 1.5,
             color: '#E2E8F0',
-            wordBreak: 'break-word',
+            whiteSpace: 'normal',
+            wordBreak: 'normal',
+            overflowWrap: 'normal',
             textAlign: align,
+            display: 'inline-block',
           }}
         >
           {cell.text}
@@ -285,77 +288,78 @@ export const TableOverlay = forwardRef<TableOverlayHandle, TableOverlayProps>(
                 top: layout.y,
                 width: layout.width,
                 pointerEvents: 'auto',
-                backgroundColor: 'rgba(18, 22, 34, 0.92)',
-                backdropFilter: 'blur(14px)',
-                borderRadius: 14,
+                backgroundColor: 'rgba(15, 23, 42, 0.72)',
+                backdropFilter: 'blur(8px)',
+                borderRadius: 8,
                 border: `1px solid ${themeStyle.borderColor}`,
-                boxShadow: `0 18px 45px rgba(0, 0, 0, 0.55), 0 0 20px ${themeStyle.badgeGlow}`,
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.35)',
                 overflow: 'hidden',
                 userSelect: 'text',
                 fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
-                transition: 'box-shadow 0.2s ease',
+                transition: 'border-color 0.2s ease',
               }}
             >
-              {/* Optional Table Title & Drag Header */}
-              <div
-                onPointerDown={(e) => handlePointerDown(layout.id, e, layout.x, layout.y)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '10px 18px',
-                  background: 'rgba(10, 14, 24, 0.85)',
-                  borderBottom: `1px solid ${themeStyle.borderColor}`,
-                  cursor: 'grab',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 16 }}>📊</span>
-                  <span
-                    style={{
-                      fontSize: 15,
-                      fontWeight: 700,
-                      color: themeStyle.accentColor,
-                      letterSpacing: '0.03em',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {layout.title || 'Table Matrix'}
-                  </span>
-                </div>
-
-                {/* Close Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeTable(layout.id);
-                  }}
-                  title="Remove Table"
+              {/* Whiteboard Table Title Header */}
+              {layout.title && (
+                <div
                   style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'rgba(255, 255, 255, 0.4)',
-                    fontSize: 16,
-                    cursor: 'pointer',
-                    padding: '2px 6px',
-                    borderRadius: 4,
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = '#EF4444';
-                    e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.15)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.4)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
+                    justifyContent: 'space-between',
+                    padding: '9px 16px 7px 16px',
+                    borderBottom: `1px solid ${themeStyle.borderColor}`,
+                    background: 'rgba(255, 255, 255, 0.02)',
                   }}
                 >
-                  ✕
-                </button>
-              </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        backgroundColor: themeStyle.accentColor,
+                        boxShadow: `0 0 6px ${themeStyle.accentColor}`,
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 700,
+                        color: themeStyle.accentColor,
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                        fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+                      }}
+                    >
+                      {layout.title}
+                    </span>
+                  </div>
+
+                  {/* Minimalist clear button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeTable(layout.id);
+                    }}
+                    title="Remove Table"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'rgba(255, 255, 255, 0.25)',
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      padding: '2px 5px',
+                      borderRadius: 4,
+                      lineHeight: 1,
+                      transition: 'color 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255, 255, 255, 0.25)')}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
 
               {/* Table Element */}
               <table
@@ -384,13 +388,14 @@ export const TableOverlay = forwardRef<TableOverlayHandle, TableOverlayProps>(
                       <th
                         key={col.id}
                         style={{
-                          padding: '12px 14px',
+                          padding: '11px 14px',
                           textAlign: col.align,
                           color: col.color || themeStyle.headerTextColor,
                           fontSize: Math.max(13, layout.fontSize),
                           fontWeight: 700,
                           letterSpacing: '0.04em',
                           textTransform: 'uppercase',
+                          whiteSpace: 'nowrap',
                           borderRight:
                             cIdx < layout.columns.length - 1
                               ? '1px solid rgba(255, 255, 255, 0.08)'

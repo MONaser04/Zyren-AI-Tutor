@@ -104,4 +104,48 @@ describe('TableLayoutEngine Unit Tests', () => {
     expect(layout.rows[0].cells[0].text).toBe('Rust Engine');
     expect(layout.rows[0].cells[1].text).toBe('1,200,000 req/s');
   });
+
+  it('guarantees min-content width for long words like Reinforcement and Unsupervised to prevent word splitting', () => {
+    const options: TableOptions = {
+      title: 'Core Machine Learning Types',
+      columns: ['Type', 'Learning Strategy', 'Example Analogy', 'Typical Output'],
+      rows: [
+        [
+          'Supervised',
+          'Learns from labeled input-output pairs',
+          'A student learning with a teacher who provides correct answers',
+          'Predicted labels or continuous values (classification/regression)',
+        ],
+        [
+          'Unsupervised',
+          'Discovers hidden patterns in unlabeled data',
+          'A child grouping toys by shape and color without being told',
+          'Clusters, associations, or dimensionality reductions',
+        ],
+        [
+          'Reinforcement',
+          'Learns by trial and error through rewards and penalties',
+          'A dog learning tricks through treats and corrections',
+          'Optimal policy or action sequence',
+        ],
+      ],
+      position: 'full',
+      theme: 'emerald',
+    };
+
+    const layout = TableLayoutEngine.computeLayout(options);
+
+    // Column 0 ('Type') holds 'Reinforcement' (13 chars)
+    // It must be at least 155px so that words never break mid-character
+    expect(layout.columns[0].width).toBeGreaterThanOrEqual(155);
+
+    // Columns with long sentences must receive comfortable reading widths
+    expect(layout.columns[1].width).toBeGreaterThanOrEqual(250);
+    expect(layout.columns[2].width).toBeGreaterThanOrEqual(300);
+    expect(layout.columns[3].width).toBeGreaterThanOrEqual(300);
+
+    // Total width must equal the sum of computed column widths
+    const sumCols = layout.columns.reduce((acc, c) => acc + c.width, 0);
+    expect(sumCols).toBe(layout.width);
+  });
 });

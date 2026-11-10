@@ -656,7 +656,7 @@ export function findFreePosition(
   const headerBottom = getHeaderBottom(existingShapes);
   const safeTopY = Math.max(140, headerBottom);
 
-  const isGeometric = ['rectangle', 'ellipse', 'shape', 'diagram', 'graph', 'graph3d', 'venn', 'image', 'video'].includes(shapeType);
+  const isGeometric = ['rectangle', 'ellipse', 'shape', 'diagram', 'graph', 'graph3d', 'venn', 'image', 'video', 'table'].includes(shapeType);
   const isCandidateContainer = ['rectangle', 'ellipse'].includes(shapeType);
   const isTextOrMath = ['text', 'math', 'handwriting'].includes(shapeType);
 
